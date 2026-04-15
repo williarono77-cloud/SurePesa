@@ -159,16 +159,20 @@ const generateDemoRounds = useCallback(() => {
 
   const fetchDeposits = useCallback(async () => {
     setDepositsError(null)
+  
     const { data, error } = await supabase
       .from('deposits')
       .select('id, user_id, amount_cents, external_ref, phone, created_at, status')
-      .in('status', ['submitted', 'pending_submit'])
-      .order('created_at', { ascending: true })
+      .in('status', ['pending', 'processing', 'failed'])
+      .order('created_at', { ascending: false })
+      .limit(20)
+  
     if (error) {
       setDepositsError(error.message)
       setDeposits([])
       return
     }
+  
     setDeposits(data ?? [])
   }, [])
 
@@ -531,7 +535,7 @@ useEffect(() => {
     fetchAdminRoundsQueue()
   }, [isLocalDemo, fetchAdminRoundsQueue])
 
-  const openConfirm = (action, requestId, label, inputLabel, placeholder, submitLabel, type = 'withdrawal', amount = null) => {
+  const openConfirm = (action, requestId, label, inputLabel, placeholder, submitLabel) => {
     setConfirmConfig({
       action,
       requestId,
@@ -540,8 +544,6 @@ useEffect(() => {
       placeholder: placeholder ?? '',
       submitLabel,
       value: '',
-      type,
-      amount,
     })
     setConfirmOpen(true)
   }
@@ -557,17 +559,16 @@ useEffect(() => {
     setProcessingId(requestId)
     try {
       let error
-      if (action === 'reject') {
-        if (confirmConfig.type === 'deposit') {
-          const res = await supabase.rpc('admin_deposit_reject', {
-            p_deposit_id: requestId,
-            p_admin_note: value?.trim() || null,
-          })
-          error = res.error
-        } else {
+        if (action === 'reject') {
           const res = await supabase.rpc('admin_withdraw_reject', {
             p_request_id: requestId,
             p_admin_note: value.trim(),
+          })
+          error = res.error
+        } else {
+          const res = await supabase.rpc('admin_withdraw_mark_paid', {
+            p_request_id: requestId,
+            p_paid_ref: value.trim(),
           })
           error = res.error
         }
@@ -586,19 +587,13 @@ useEffect(() => {
       if (error) {
         setMessage?.({ type: 'error', text: error.message })
       } else {
-        if (action === 'approve') {
-          setMessage?.({ type: 'success', text: 'Deposit approved.' })
-        } else if (action === 'reject') {
-          setMessage?.({ type: 'success', text: confirmConfig.type === 'deposit' ? 'Deposit rejected.' : 'Withdrawal rejected.' })
+        if (action === 'reject') {
+          setMessage?.({ type: 'success', text: 'Withdrawal rejected.' })
         } else {
           setMessage?.({ type: 'success', text: 'Marked as paid.' })
         }
         closeConfirm()
-        if (confirmConfig.type === 'deposit') {
-          fetchDeposits()
-        } else {
-          fetchWithdrawals()
-        }
+        fetchWithdrawals()
       }
     } catch (e) {
       setMessage?.({ type: 'error', text: e?.message || 'Action failed' })
@@ -658,8 +653,7 @@ useEffect(() => {
         </div>
         <div className="admin-dashboard__card">
           <div className="admin-dashboard__stat-value">{deposits.length}</div>
-          <div className="admin-dashboard__stat-label">Pending deposits</div>
-        </div>
+        <div className="admin-dashboard__stat-label">Active deposit records</div>        </div>
         <div className="admin-dashboard__card">
           <div className="admin-dashboard__stat-value">{withdrawals.length}</div>
           <div className="admin-dashboard__stat-label">Pending withdrawals</div>
@@ -797,58 +791,40 @@ useEffect(() => {
       </section>
 
       {/* Deposit queue */}
-      <div className="admin-dashboard__card admin-dashboard__card--wide" style={{ marginBottom: '1.5rem' }}>
-        <h3 className="admin-dashboard__card-title">Deposit Queue</h3>
-        {depositsError && <p className="text-error admin-dashboard__error">{depositsError}</p>}
-        {deposits.length === 0 && !depositsError && (
-          <div className="admin-dashboard__empty">No pending deposits</div>
-        )}
-        {deposits.length > 0 && (
-          <div className="admin-dashboard__table-wrap">
-            <table className="admin-dashboard__table">
-              <thead>
-                <tr>
-                  <th>Amount</th>
-                  <th>M-Pesa Ref</th>
-                  <th>Phone</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {deposits.map((d) => (
-                  <tr key={d.id}>
-                    <td>{formatKes(d.amount_cents)}</td>
-                    <td>{d.external_ref || '-'}</td>
-                    <td>{d.phone ?? '-'}</td>
-                    <td>{formatDate(d.created_at)}</td>
-                    <td>
-                      <div className="admin-dashboard__actions">
-                        <button
-                          type="button"
-                          className="admin-dashboard__btn admin-dashboard__btn--reject"
-                          disabled={!!processingId}
-                          onClick={() => openConfirm('reject', d.id, 'Reject deposit', 'Admin note (optional)', 'Reason for rejection', 'Reject', 'deposit')}
-                        >
-                          Reject
-                        </button>
-                        <button
-                          type="button"
-                          className="admin-dashboard__btn admin-dashboard__btn--pay"
-                          disabled={!!processingId}
-                          onClick={() => openConfirm('approve', d.id, 'Approve deposit', 'Confirm approval', '', 'Approve', 'deposit', d.amount_cents)}
-                        >
-                          Approve
-                        </button>
-                      </div>
-                    </td>
+        {/* Deposit monitor */}
+        <div className="admin-dashboard__card admin-dashboard__card--wide" style={{ marginBottom: '1.5rem' }}>
+          <h3 className="admin-dashboard__card-title">Deposit Monitor</h3>
+          {depositsError && <p className="text-error admin-dashboard__error">{depositsError}</p>}
+          {deposits.length === 0 && !depositsError && (
+            <div className="admin-dashboard__empty">No active deposit records</div>
+          )}
+          {deposits.length > 0 && (
+            <div className="admin-dashboard__table-wrap">
+              <table className="admin-dashboard__table">
+                <thead>
+                  <tr>
+                    <th>Amount</th>
+                    <th>Reference</th>
+                    <th>Phone</th>
+                    <th>Status</th>
+                    <th>Created</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                </thead>
+                <tbody>
+                  {deposits.map((d) => (
+                    <tr key={d.id}>
+                      <td>{formatKes(d.amount_cents)}</td>
+                      <td>{d.external_ref || '-'}</td>
+                      <td>{d.phone ?? '-'}</td>
+                      <td>{d.status ?? 'pending'}</td>
+                      <td>{formatDate(d.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
       {/* Withdrawal queue */}
       <div className="admin-dashboard__card admin-dashboard__card--wide" style={{ marginBottom: '1.5rem' }}>
@@ -949,12 +925,12 @@ useEffect(() => {
       </div>
 
       {/* Confirm dialog */}
-      {confirmOpen && confirmConfig && (
-        <div className="modal-overlay" onClick={closeConfirm}>
-          <div className="modal admin-dashboard__confirm" onClick={(e) => e.stopPropagation()}>
-            <h3 className="modal__title">{confirmConfig.label}</h3>
-            <p className="admin-dashboard__confirm-label">{confirmConfig.inputLabel}</p>
-            {confirmConfig.action !== 'approve' && (
+        {confirmOpen && confirmConfig && (
+          <div className="modal-overlay" onClick={closeConfirm}>
+            <div className="modal admin-dashboard__confirm" onClick={(e) => e.stopPropagation()}>
+              <h3 className="modal__title">{confirmConfig.label}</h3>
+              <p className="admin-dashboard__confirm-label">{confirmConfig.inputLabel}</p>
+        
               <input
                 type="text"
                 className="modal__input"
@@ -962,31 +938,27 @@ useEffect(() => {
                 value={confirmConfig.value}
                 onChange={(e) => setConfirmConfig((c) => (c ? { ...c, value: e.target.value } : c))}
               />
-            )}
-            {confirmConfig.action === 'approve' && (
-              <p className="admin-dashboard__confirm-label" style={{ marginTop: '0.5rem' }}>
-                This will add {confirmConfig.amount ? formatKes(confirmConfig.amount) : 'funds'} to the user's wallet.
-              </p>
-            )}
-            <div className="admin-dashboard__confirm-actions">
-              <button type="button" className="admin-dashboard__btn admin-dashboard__btn--secondary" onClick={closeConfirm}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="admin-dashboard__btn admin-dashboard__btn--pay"
-                disabled={(confirmConfig.action !== 'approve' && !confirmConfig.value?.trim()) || !!processingId}
-                onClick={handleConfirmSubmit}
-              >
-                {processingId ? 'Processing…' : confirmConfig.submitLabel}
-              </button>
+        
+              <div className="admin-dashboard__confirm-actions">
+                <button
+                  type="button"
+                  className="admin-dashboard__btn admin-dashboard__btn--secondary"
+                  onClick={closeConfirm}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="admin-dashboard__btn admin-dashboard__btn--pay"
+                  disabled={!confirmConfig.value?.trim() || !!processingId}
+                  onClick={handleConfirmSubmit}
+                >
+                  {processingId ? 'Processing…' : confirmConfig.submitLabel}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
-  )
-}
+        )}
 // DEBUG TELEMETRY REMOVED - no more 127.0.0.1:7736 calls
 
 
