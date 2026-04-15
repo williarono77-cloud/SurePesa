@@ -917,13 +917,13 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* Confirm dialog */}
+        {/* Confirm dialog */}
         {confirmOpen && confirmConfig && (
           <div className="modal-overlay" onClick={closeConfirm}>
             <div className="modal admin-dashboard__confirm" onClick={(e) => e.stopPropagation()}>
               <h3 className="modal__title">{confirmConfig.label}</h3>
               <p className="admin-dashboard__confirm-label">{confirmConfig.inputLabel}</p>
-        
+  
               <input
                 type="text"
                 className="modal__input"
@@ -931,7 +931,7 @@ useEffect(() => {
                 value={confirmConfig.value}
                 onChange={(e) => setConfirmConfig((c) => (c ? { ...c, value: e.target.value } : c))}
               />
-        
+  
               <div className="admin-dashboard__confirm-actions">
                 <button
                   type="button"
@@ -946,12 +946,15 @@ useEffect(() => {
                   disabled={!confirmConfig.value?.trim() || !!processingId}
                   onClick={handleConfirmSubmit}
                 >
-                  {processingId ? 'Processing…' : confirmConfig.submitLabel}
+                  {processingId ? "Processing…" : confirmConfig.submitLabel}
                 </button>
               </div>
             </div>
           </div>
         )}
+      </div>
+    )
+  }
 // DEBUG TELEMETRY REMOVED - no more 127.0.0.1:7736 calls
 
 
