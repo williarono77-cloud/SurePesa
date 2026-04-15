@@ -1,18 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient.js";
-import { getAppConfigValue } from "../utils/appConfig";
 
-  export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved }) {
+export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved }) {
   const [loading, setLoading] = useState(false);
-
-  const [mpesaNumber, setMpesaNumber] = useState("07XXXXXXXX");
-  const [mpesaNote, setMpesaNote] = useState("");
-
   const [amount, setAmount] = useState("");
+  const [phone, setPhone] = useState("07XXXXXXXX");
   const [depositId, setDepositId] = useState(null);
-
-  const [mpesaRef, setMpesaRef] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | created | submitted
+  const [status, setStatus] = useState("idle"); // idle | initiating | pending | approved | failed
   const [message, setMessage] = useState(null);
 
   const amountCents = useMemo(() => {
@@ -21,38 +15,27 @@ import { getAppConfigValue } from "../utils/appConfig";
     return Math.round(n * 100);
   }, [amount]);
 
+  function normalizePhone(rawPhone) {
+    const digits = String(rawPhone || "").replace(/\D/g, "");
+
+    if (!digits) return "";
+    if (digits.startsWith("254") && digits.length === 12) return digits;
+    if (digits.startsWith("0") && digits.length === 10) return `254${digits.slice(1)}`;
+    if (digits.startsWith("7") && digits.length === 9) return `254${digits}`;
+    if (digits.startsWith("1") && digits.length === 9) return `254${digits}`;
+
+    return digits;
+  }
+
   useEffect(() => {
     if (!isOpen) return;
 
     setLoading(false);
+    setAmount("");
+    setPhone("07XXXXXXXX");
     setDepositId(null);
-    setMpesaRef("");
     setStatus("idle");
     setMessage(null);
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const [number, note] = await Promise.all([
-          getAppConfigValue("mpesa_manual_number"),
-          getAppConfigValue("mpesa_manual_note"),
-        ]);
-
-        if (cancelled) return;
-
-        setMpesaNumber(number || "07XXXXXXXX");
-        setMpesaNote(note || "");
-      } catch {
-        if (cancelled) return;
-        setMpesaNumber("07XXXXXXXX");
-        setMpesaNote("");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [isOpen]);
 
   useEffect(() => {
@@ -72,15 +55,36 @@ import { getAppConfigValue } from "../utils/appConfig";
           const newStatus = payload?.new?.status;
 
           if (newStatus === "approved") {
-            setMessage({ type: "success", text: "Deposit approved! Wallet updated." });
+            setStatus("approved");
+            setLoading(false);
+            setMessage({
+              type: "success",
+              text: "Deposit confirmed. Wallet updated successfully.",
+            });
+
             if (onApproved) onApproved();
-            onClose();
-          } else if (newStatus === "rejected") {
+            return;
+          }
+
+          if (newStatus === "processing" || newStatus === "pending") {
+            setStatus("pending");
+            setLoading(false);
+            setMessage({
+              type: "info",
+              text: "Payment request sent. Check your phone and complete the prompt.",
+            });
+            return;
+          }
+
+          if (newStatus === "failed" || newStatus === "rejected") {
+            setStatus("failed");
+            setLoading(false);
             setMessage({
               type: "error",
-              text: payload?.new?.admin_note
-                ? `Deposit rejected: ${payload.new.admin_note}`
-                : "Deposit rejected by admin.",
+              text:
+                payload?.new?.admin_note ||
+                payload?.new?.failure_reason ||
+                "Payment failed. Please try again.",
             });
           }
         }
@@ -90,11 +94,11 @@ import { getAppConfigValue } from "../utils/appConfig";
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [depositId, onApproved, onClose]);
+  }, [depositId, onApproved]);
 
   if (!isOpen) return null;
 
-  async function handleCreateDeposit() {
+  async function handleStartDeposit() {
     setMessage(null);
 
     if (!amountCents) {
@@ -102,66 +106,76 @@ import { getAppConfigValue } from "../utils/appConfig";
       return;
     }
 
+    const normalizedPhone = normalizePhone(phone);
+
+    if (!normalizedPhone || normalizedPhone.length !== 12 || !normalizedPhone.startsWith("254")) {
+      setMessage({
+        type: "error",
+        text: "Enter a valid Safaricom phone number.",
+      });
+      return;
+    }
+
     setLoading(true);
+    setStatus("initiating");
+
     try {
-      const { data, error } = await supabase.rpc("deposit_initiate", {
+      const { data: depositData, error: depositError } = await supabase.rpc("deposit_initiate", {
         p_amount_cents: amountCents,
-        p_phone: mpesaNumber,
+        p_phone: normalizedPhone,
       });
 
-      if (error) throw error;
+      if (depositError) throw depositError;
 
-      const id = typeof data === "string" ? data : data?.deposit_id || data?.id || data;
-      if (!id) throw new Error("Deposit created but no deposit id returned.");
+      const createdDepositId =
+        typeof depositData === "string"
+          ? depositData
+          : depositData?.deposit_id || depositData?.id || depositData;
 
-      setDepositId(id);
-      setStatus("created");
+      if (!createdDepositId) {
+        throw new Error("Deposit created but no deposit id returned.");
+      }
 
+      setDepositId(createdDepositId);
+
+      const { data: paymentData, error: paymentError } = await supabase.functions.invoke("payments", {
+        body: {
+          action: "initiate",
+          deposit_id: createdDepositId,
+          amount_cents: amountCents,
+          phone: normalizedPhone,
+        },
+      });
+
+      if (paymentError) throw paymentError;
+
+      if (paymentData?.ok === false) {
+        throw new Error(paymentData?.error || "Failed to start payment.");
+      }
+
+      setStatus("pending");
       setMessage({
         type: "info",
-        text: "Deposit created. Send money using the steps below, then paste the M-Pesa code.",
-      });
-    } catch (e) {
-      setMessage({ type: "error", text: e?.message || "Failed to create deposit." });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleSubmitRef() {
-    setMessage(null);
-
-    const code = (mpesaRef || "").trim();
-    if (code.length < 6) {
-      setMessage({ type: "error", text: "Enter a valid M-Pesa reference code." });
-      return;
-    }
-    if (!depositId) {
-      setMessage({ type: "error", text: "Create a deposit first." });
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const { error } = await supabase.rpc("deposit_submit_mpesa_ref", {
-        p_deposit_id: depositId,
-        p_mpesa_ref: code,
+        text: "Payment request sent. Check your phone and complete the prompt.",
       });
 
-      if (error) throw error;
-
-    setStatus("submitted");
-    if (onSubmitted) onSubmitted();
-    onClose();
+      if (onSubmitted) onSubmitted();
     } catch (e) {
-      setMessage({ type: "error", text: e?.message || "Failed to submit reference code." });
+      setStatus("failed");
+      setMessage({
+        type: "error",
+        text: e?.message || "Failed to start payment.",
+      });
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="modalOverlay" style={{ position: "fixed", inset: 0, zIndex: 999999, overflowY: "auto" }}>
+    <div
+      className="modalOverlay"
+      style={{ position: "fixed", inset: 0, zIndex: 999999, overflowY: "auto" }}
+    >
       <div
         className="modal"
         style={{
@@ -170,7 +184,7 @@ import { getAppConfigValue } from "../utils/appConfig";
         }}
       >
         <div className="modalHeader">
-          <h2>Deposit (Manual M-Pesa)</h2>
+          <h2>Deposit</h2>
           <button onClick={onClose} className="iconBtn" aria-label="Close" type="button">
             ✕
           </button>
@@ -185,50 +199,49 @@ import { getAppConfigValue } from "../utils/appConfig";
             onChange={(e) => setAmount(e.target.value)}
             placeholder="e.g. 500"
             inputMode="decimal"
-            disabled={loading || status !== "idle"}
+            disabled={loading || status === "pending" || status === "approved"}
           />
-          <button onClick={handleCreateDeposit} disabled={loading || status !== "idle"} type="button">
-            {loading ? "Please wait..." : "Continue"}
-          </button>
         </div>
 
-        {status !== "idle" && (
-          <div className="section">
-            <h3>How to Send Money</h3>
-            <ol style={{ textAlign: "left", paddingLeft: "1.5rem", marginBottom: "1rem" }}>
-              <li>Open M-Pesa on your phone</li>
-              <li>Select <b>Send Money</b></li>
-              <li>Enter this number: <b style={{ color: "var(--accent-gold)", fontSize: "1.1em" }}>{mpesaNumber}</b></li>
-              <li>Enter the amount: <b style={{ color: "var(--accent-gold)", fontSize: "1.1em" }}>KES {amount || "..."}</b></li>
-              <li>Enter your M-Pesa PIN and confirm</li>
-              <li>Wait for the confirmation SMS</li>
-              <li>Copy the M-Pesa reference code from the SMS (e.g. QAZ1BCD234)</li>
-              <li>Come back here and paste the code below</li>
-            </ol>
+        <div className="section">
+          <label>Phone Number</label>
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="e.g. 07XXXXXXXX or 2547XXXXXXXX"
+            inputMode="tel"
+            autoComplete="tel"
+            disabled={loading || status === "pending" || status === "approved"}
+          />
+        </div>
 
-            {mpesaNote ? <p className="muted" style={{ marginBottom: "1rem", padding: "0.75rem", backgroundColor: "var(--bg-secondary)", borderRadius: "4px" }}>{mpesaNote}</p> : null}
+        <div className="section">
+          <button
+            onClick={handleStartDeposit}
+            disabled={loading || status === "pending" || status === "approved"}
+            type="button"
+          >
+            {loading
+              ? "Please wait..."
+              : status === "pending"
+              ? "Payment Pending"
+              : status === "approved"
+              ? "Deposit Complete"
+              : "Pay Now"}
+          </button>
 
-            <label>M-Pesa Reference Code</label>
-            <input
-              value={mpesaRef}
-              onChange={(e) => setMpesaRef(e.target.value)}
-              placeholder="Paste M-Pesa code here (e.g. QAZ1BCD234)"
-              disabled={loading || status === "submitted"}
-              autoCapitalize="characters"
-              autoCorrect="off"
-            />
+          {status === "pending" ? (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              Complete the payment prompt on your phone. Your wallet will update automatically once payment is confirmed.
+            </p>
+          ) : null}
 
-            <button onClick={handleSubmitRef} disabled={loading || status === "submitted"} type="button">
-              {loading ? "Submitting..." : status === "submitted" ? "Code Submitted" : "Submit Code"}
-            </button>
-
-        {status === "submitted" ? (
-          <p className="muted" style={{ marginTop: "0.5rem" }}>
-            Waiting for admin approval…
-          </p>
-        ) : null}
-          </div>
-        )}
+          {status === "approved" ? (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              Payment confirmed successfully.
+            </p>
+          ) : null}
+        </div>
       </div>
     </div>
   );
