@@ -554,53 +554,46 @@ useEffect(() => {
   }
 
   const handleConfirmSubmit = async () => {
-    if (!confirmConfig) return
-    const { action, requestId, value } = confirmConfig
-    setProcessingId(requestId)
+    if (!confirmConfig) return;
+  
+    const { action, requestId, value } = confirmConfig;
+    setProcessingId(requestId);
+  
     try {
-      let error
-        if (action === 'reject') {
-          const res = await supabase.rpc('admin_withdraw_reject', {
-            p_request_id: requestId,
-            p_admin_note: value.trim(),
-          })
-          error = res.error
-        } else {
-          const res = await supabase.rpc('admin_withdraw_mark_paid', {
-            p_request_id: requestId,
-            p_paid_ref: value.trim(),
-          })
-          error = res.error
-        }
-      } else if (action === 'approve') {
-        const res = await supabase.rpc('admin_deposit_approve', {
-          p_deposit_id: requestId,
-        })
-        error = res.error
+      let error = null;
+  
+      if (action === "reject") {
+        const res = await supabase.rpc("admin_withdraw_reject", {
+          p_request_id: requestId,
+          p_admin_note: value.trim(),
+        });
+        error = res.error;
       } else {
-        const res = await supabase.rpc('admin_withdraw_mark_paid', {
+        const res = await supabase.rpc("admin_withdraw_mark_paid", {
           p_request_id: requestId,
           p_paid_ref: value.trim(),
-        })
-        error = res.error
+        });
+        error = res.error;
       }
+  
       if (error) {
-        setMessage?.({ type: 'error', text: error.message })
+        setMessage?.({ type: "error", text: error.message });
       } else {
-        if (action === 'reject') {
-          setMessage?.({ type: 'success', text: 'Withdrawal rejected.' })
+        if (action === "reject") {
+          setMessage?.({ type: "success", text: "Withdrawal rejected." });
         } else {
-          setMessage?.({ type: 'success', text: 'Marked as paid.' })
+          setMessage?.({ type: "success", text: "Marked as paid." });
         }
-        closeConfirm()
-        fetchWithdrawals()
+  
+        closeConfirm();
+        fetchWithdrawals();
       }
     } catch (e) {
-      setMessage?.({ type: 'error', text: e?.message || 'Action failed' })
+      setMessage?.({ type: "error", text: e?.message || "Action failed" });
     } finally {
-      setProcessingId(null)
+      setProcessingId(null);
     }
-  }
+  };
 
   if (guardLoading || profileRole !== 'admin') {
     return (
