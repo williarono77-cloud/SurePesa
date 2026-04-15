@@ -786,10 +786,14 @@ const canBet = isBreakOpen && !!betRoundPublicId;
         isOpen={depositModalOpen}
         onClose={() => setDepositModalOpen(false)}
         onSubmitted={() => {
-          setDepositModalOpen(false);
-          setMessage({ type: "success", text: "Deposit submitted. Waiting for admin approval." });
+          setMessage({ type: "info", text: "Payment request sent. Check your phone to complete payment." });
         }}
-        onApproved={refreshPrivateData}
+        onApproved={() => {
+          refreshPrivateData();
+          setDepositModalOpen(false);
+          setShowDashboard(true);
+          setMessage({ type: "success", text: "Deposit confirmed. Wallet updated." });
+        }}
       />
 
       <WithdrawModal
