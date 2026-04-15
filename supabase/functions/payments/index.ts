@@ -173,12 +173,19 @@ async function handleInitiate(req: Request): Promise<Response> {
     payheroData = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      throw new Error(
-        String(
-          (payheroData as { message?: string; error?: string }).message ||
-            (payheroData as { message?: string; error?: string }).error ||
-            "PayHero initiation failed.",
-        ),
+      return jsonResponse(
+        {
+          error: "PAYMENT_INIT_FAILED",
+          message:
+            String(
+              (payheroData as { message?: string; error?: string }).message ||
+              (payheroData as { message?: string; error?: string }).error ||
+              "PayHero initiation failed."
+            ),
+          payhero_response: payheroData,
+          payhero_status: res.status,
+        },
+        400,
       );
     }
   } catch (error) {
