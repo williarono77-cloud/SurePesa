@@ -79,11 +79,61 @@ async function updateDepositStatus(
 async function handleInitiate(req: Request): Promise<Response> {
   let body: { deposit_id?: string; amount_cents?: number; phone?: string; action?: string };
 
-  try {
-    body = await req.json();
-  } catch {
-    return jsonResponse({ error: "INVALID_JSON" }, 400);
-  }
+    let payheroData: Record<string, unknown> = {};
+    let rawPayheroText = "";
+    
+    try {
+      console.log("PayHero initiate payload:", payload);
+    
+      const res = await fetch(`${PAYHERO_API}/payments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: getPayheroAuthHeader(),
+        },
+        body: JSON.stringify(payload),
+      });
+    
+      rawPayheroText = await res.text();
+      console.log("PayHero initiate status:", res.status);
+      console.log("PayHero initiate raw response:", rawPayheroText);
+    
+      try {
+        payheroData = rawPayheroText ? JSON.parse(rawPayheroText) : {};
+      } catch {
+        payheroData = { raw_response: rawPayheroText };
+      }
+    
+      if (!res.ok) {
+        await updateDepositStatus(depositId, { status: "failed" }).catch(() => null);
+    
+        return jsonResponse(
+          {
+            error: "PAYMENT_INIT_FAILED",
+            message:
+              String(
+                (payheroData as { message?: string; error?: string }).message ||
+                (payheroData as { message?: string; error?: string }).error ||
+                "PayHero initiation failed."
+              ),
+            payhero_status: res.status,
+          },
+          400,
+        );
+      }
+    } catch (error) {
+      console.error("PayHero fetch failed:", error);
+    
+      await updateDepositStatus(depositId, { status: "failed" }).catch(() => null);
+    
+      return jsonResponse(
+        {
+          error: "PAYMENT_INIT_FAILED",
+          message: error instanceof Error ? error.message : "Failed to initiate PayHero payment.",
+        },
+        400,
+      );
+    }
 
   const depositId = String(body.deposit_id ?? "").trim();
   const amountCents = Number(body.amount_cents ?? 0);
