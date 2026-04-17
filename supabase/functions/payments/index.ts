@@ -55,14 +55,13 @@ function mapPayheroStatus(rawStatus: unknown): "success" | "failed" | "processin
   const normalized = String(rawStatus ?? "").trim().toUpperCase();
 
   if (normalized === "SUCCESS" || normalized === "APPROVED") return "success";
-  if (normalized === "QUEUED" || normalized === "PENDING" || normalized === "PROCESSING") return "processing";
+  if (normalized === "QUEUED" || normalized === "PENDING" || normalized === "PROCESSING") {
+    return "processing";
+  }
   return "failed";
 }
 
-async function updateDepositStatus(
-  depositId: string,
-  fields: Record<string, unknown>,
-) {
+async function updateDepositStatus(depositId: string, fields: Record<string, unknown>) {
   const { error } = await supabase
     .from("deposits")
     .update({
@@ -76,64 +75,75 @@ async function updateDepositStatus(
   }
 }
 
+async function verifyPayheroReference(reference: string) {
+  try {
+    const res = await fetch(
+      `${PAYHERO_API}/transaction-status?reference=${encodeURIComponent(reference)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: getPayheroAuthHeader(),
+        },
+      },
+    );
+
+    const rawText = await res.text();
+    let data: Record<string, unknown> = {};
+
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      data = { raw_response: rawText };
+    }
+
+    if (!res.ok) {
+      console.log("PayHero verify status:", res.status);
+      console.log("PayHero verify raw response:", rawText);
+      return null;
+    }
+
+    return data;
+  } catch (error) {
+    console.error("PayHero verify fetch failed:", error);
+    return null;
+  }
+}
+
+async function findDepositForWebhook(
+  externalReference: string | null,
+  providerReference: string | null,
+) {
+  if (externalReference) {
+    const { data } = await supabase
+      .from("deposits")
+      .select("id, external_ref, checkout_request_id")
+      .eq("external_ref", externalReference)
+      .maybeSingle();
+
+    if (data?.id) return data;
+  }
+
+  if (providerReference) {
+    const { data } = await supabase
+      .from("deposits")
+      .select("id, external_ref, checkout_request_id")
+      .eq("checkout_request_id", providerReference)
+      .maybeSingle();
+
+    if (data?.id) return data;
+  }
+
+  return null;
+}
+
 async function handleInitiate(req: Request): Promise<Response> {
   let body: { deposit_id?: string; amount_cents?: number; phone?: string; action?: string };
 
-    let payheroData: Record<string, unknown> = {};
-    let rawPayheroText = "";
-    
-    try {
-      console.log("PayHero initiate payload:", payload);
-    
-      const res = await fetch(`${PAYHERO_API}/payments`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: getPayheroAuthHeader(),
-        },
-        body: JSON.stringify(payload),
-      });
-    
-      rawPayheroText = await res.text();
-      console.log("PayHero initiate status:", res.status);
-      console.log("PayHero initiate raw response:", rawPayheroText);
-    
-      try {
-        payheroData = rawPayheroText ? JSON.parse(rawPayheroText) : {};
-      } catch {
-        payheroData = { raw_response: rawPayheroText };
-      }
-    
-      if (!res.ok) {
-        await updateDepositStatus(depositId, { status: "failed" }).catch(() => null);
-    
-        return jsonResponse(
-          {
-            error: "PAYMENT_INIT_FAILED",
-            message:
-              String(
-                (payheroData as { message?: string; error?: string }).message ||
-                (payheroData as { message?: string; error?: string }).error ||
-                "PayHero initiation failed."
-              ),
-            payhero_status: res.status,
-          },
-          400,
-        );
-      }
-    } catch (error) {
-      console.error("PayHero fetch failed:", error);
-    
-      await updateDepositStatus(depositId, { status: "failed" }).catch(() => null);
-    
-      return jsonResponse(
-        {
-          error: "PAYMENT_INIT_FAILED",
-          message: error instanceof Error ? error.message : "Failed to initiate PayHero payment.",
-        },
-        400,
-      );
-    }
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "INVALID_JSON" }, 400);
+  }
 
   const depositId = String(body.deposit_id ?? "").trim();
   const amountCents = Number(body.amount_cents ?? 0);
@@ -157,7 +167,10 @@ async function handleInitiate(req: Request): Promise<Response> {
   const callbackUrl = Deno.env.get("PAYHERO_CALLBACK_URL") ?? "";
 
   if (!channelId || !callbackUrl) {
-    return jsonResponse({ error: "CONFIG_MISSING", message: "PayHero channel/callback config missing." }, 500);
+    return jsonResponse(
+      { error: "CONFIG_MISSING", message: "PayHero channel/callback config missing." },
+      500,
+    );
   }
 
   const { data: deposit, error: depositError } = await supabase
@@ -167,7 +180,10 @@ async function handleInitiate(req: Request): Promise<Response> {
     .maybeSingle();
 
   if (depositError) {
-    return jsonResponse({ error: "DEPOSIT_LOOKUP_FAILED", message: depositError.message }, 500);
+    return jsonResponse(
+      { error: "DEPOSIT_LOOKUP_FAILED", message: depositError.message },
+      500,
+    );
   }
 
   if (!deposit?.id) {
@@ -194,7 +210,10 @@ async function handleInitiate(req: Request): Promise<Response> {
     });
   } catch (error) {
     return jsonResponse(
-      { error: "DB_UPDATE_FAILED", message: error instanceof Error ? error.message : "Failed to update deposit." },
+      {
+        error: "DB_UPDATE_FAILED",
+        message: error instanceof Error ? error.message : "Failed to update deposit.",
+      },
       500,
     );
   }
@@ -209,8 +228,11 @@ async function handleInitiate(req: Request): Promise<Response> {
   };
 
   let payheroData: Record<string, unknown> = {};
+  let rawPayheroText = "";
 
   try {
+    console.log("PayHero initiate payload:", payload);
+
     const res = await fetch(`${PAYHERO_API}/payments`, {
       method: "POST",
       headers: {
@@ -220,25 +242,38 @@ async function handleInitiate(req: Request): Promise<Response> {
       body: JSON.stringify(payload),
     });
 
-    payheroData = await res.json().catch(() => ({}));
+    rawPayheroText = await res.text();
+
+    console.log("PayHero initiate status:", res.status);
+    console.log("PayHero initiate raw response:", rawPayheroText);
+
+    try {
+      payheroData = rawPayheroText ? JSON.parse(rawPayheroText) : {};
+    } catch {
+      payheroData = { raw_response: rawPayheroText };
+    }
 
     if (!res.ok) {
+      await updateDepositStatus(depositId, { status: "failed" }).catch(() => null);
+
       return jsonResponse(
         {
           error: "PAYMENT_INIT_FAILED",
-          message:
-            String(
-              (payheroData as { message?: string; error?: string }).message ||
+          message: String(
+            (payheroData as { message?: string; error?: string }).message ||
               (payheroData as { message?: string; error?: string }).error ||
               "PayHero initiation failed."
-            ),
-          payhero_response: payheroData,
+          ),
           payhero_status: res.status,
+          payhero_response: payheroData,
+          request_payload: payload,
         },
         400,
       );
     }
   } catch (error) {
+    console.error("PayHero fetch failed:", error);
+
     await updateDepositStatus(depositId, { status: "failed" }).catch(() => null);
 
     return jsonResponse(
@@ -274,7 +309,10 @@ async function handleInitiate(req: Request): Promise<Response> {
     });
   } catch (error) {
     return jsonResponse(
-      { error: "DB_UPDATE_FAILED", message: error instanceof Error ? error.message : "Failed to save payment refs." },
+      {
+        error: "DB_UPDATE_FAILED",
+        message: error instanceof Error ? error.message : "Failed to save payment refs.",
+      },
       500,
     );
   }
@@ -289,54 +327,6 @@ async function handleInitiate(req: Request): Promise<Response> {
   });
 }
 
-async function verifyPayheroReference(reference: string) {
-  try {
-    const res = await fetch(
-      `${PAYHERO_API}/transaction-status?reference=${encodeURIComponent(reference)}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: getPayheroAuthHeader(),
-        },
-      },
-    );
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      return null;
-    }
-
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-async function findDepositForWebhook(externalReference: string | null, providerReference: string | null) {
-  if (externalReference) {
-    const { data } = await supabase
-      .from("deposits")
-      .select("id, external_ref, checkout_request_id")
-      .eq("external_ref", externalReference)
-      .maybeSingle();
-
-    if (data?.id) return data;
-  }
-
-  if (providerReference) {
-    const { data } = await supabase
-      .from("deposits")
-      .select("id, external_ref, checkout_request_id")
-      .eq("checkout_request_id", providerReference)
-      .maybeSingle();
-
-    if (data?.id) return data;
-  }
-
-  return null;
-}
-
 async function handleWebhook(req: Request): Promise<Response> {
   const ok = () => new Response(null, { status: 200, headers: corsHeaders });
 
@@ -346,6 +336,8 @@ async function handleWebhook(req: Request): Promise<Response> {
   } catch {
     return ok();
   }
+
+  console.log("PayHero webhook body:", body);
 
   const providerReference = firstString(
     body.reference,
@@ -373,6 +365,10 @@ async function handleWebhook(req: Request): Promise<Response> {
   const deposit = await findDepositForWebhook(externalReference, providerReference);
 
   if (!deposit?.id) {
+    console.log("PayHero webhook: deposit not found", {
+      externalReference,
+      providerReference,
+    });
     return ok();
   }
 
@@ -390,6 +386,12 @@ async function handleWebhook(req: Request): Promise<Response> {
     if (verifiedStatus) {
       finalStatus = verifiedStatus;
     }
+
+    console.log("PayHero verify result:", {
+      providerReference,
+      verifyData,
+      finalStatus,
+    });
   }
 
   if (finalStatus === "processing") {
