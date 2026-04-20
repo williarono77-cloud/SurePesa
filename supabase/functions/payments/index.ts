@@ -141,21 +141,13 @@ async function handleInitiate(req: Request): Promise<Response> {
     deposit_id?: string;
     amount_cents?: number | string;
     phone?: string | null;
-    action?: string;
   };
 
   let body: InitiateBody;
-
   try {
     body = await req.json();
   } catch {
-    return jsonResponse(
-      {
-        error: "INVALID_JSON",
-        message: "Request body must be valid JSON.",
-      },
-      400,
-    );
+    return jsonResponse({ error: "INVALID_JSON", message: "Request body must be valid JSON." }, 400);
   }
 
   const depositId = String(body.deposit_id ?? "").trim();
@@ -163,23 +155,11 @@ async function handleInitiate(req: Request): Promise<Response> {
   const normalizedPhone = normalizePhone(body.phone);
 
   if (!depositId) {
-    return jsonResponse(
-      {
-        error: "INVALID_INPUT",
-        message: "deposit_id is required.",
-      },
-      400,
-    );
+    return jsonResponse({ error: "INVALID_INPUT", message: "deposit_id is required." }, 400);
   }
 
   if (!Number.isFinite(amountCents) || amountCents <= 0) {
-    return jsonResponse(
-      {
-        error: "INVALID_INPUT",
-        message: "amount_cents must be a positive number.",
-      },
-      400,
-    );
+    return jsonResponse({ error: "INVALID_INPUT", message: "amount_cents must be a positive number." }, 400);
   }
 
   if (!normalizedPhone || normalizedPhone.length !== 12 || !normalizedPhone.startsWith("254")) {
@@ -242,14 +222,7 @@ async function handleInitiate(req: Request): Promise<Response> {
 
   if (depositError) {
     console.error("Deposit lookup failed:", depositError);
-
-    return jsonResponse(
-      {
-        error: "DEPOSIT_LOOKUP_FAILED",
-        message: depositError.message,
-      },
-      500,
-    );
+    return jsonResponse({ error: "DEPOSIT_LOOKUP_FAILED", message: depositError.message }, 500);
   }
 
   if (!deposit?.id) {
@@ -288,8 +261,6 @@ async function handleInitiate(req: Request): Promise<Response> {
     );
   }
 
-  const externalReference = String(deposit.external_ref ?? "").trim() || `dep_${depositId}`;
-
   if (amountCents % 100 !== 0) {
     return jsonResponse(
       {
@@ -301,26 +272,15 @@ async function handleInitiate(req: Request): Promise<Response> {
     );
   }
 
+  const externalReference = String(deposit.external_ref ?? "").trim() || `dep_${depositId}`;
   const amountKes = amountCents / 100;
 
-  try {
-    await updateDepositStatus(depositId, {
-      status: "processing",
-      provider: "payhero",
-      phone: normalizedPhone,
-      external_ref: externalReference,
-    });
-  } catch (error) {
-    console.error("Failed to mark deposit processing:", error);
-
-    return jsonResponse(
-      {
-        error: "DB_UPDATE_FAILED",
-        message: error instanceof Error ? error.message : "Failed to update deposit before initiation.",
-      },
-      500,
-    );
-  }
+  await updateDepositStatus(depositId, {
+    status: "processing",
+    provider: "payhero",
+    phone: normalizedPhone,
+    external_ref: externalReference,
+  });
 
   const payload = {
     amount: amountKes,
@@ -348,7 +308,6 @@ async function handleInitiate(req: Request): Promise<Response> {
     });
 
     rawPayheroText = await res.text();
-
     console.log("PayHero initiate status:", res.status);
     console.log("PayHero initiate raw response:", rawPayheroText);
 
@@ -369,6 +328,7 @@ async function handleInitiate(req: Request): Promise<Response> {
       {
         error: "PAYMENT_INIT_FAILED",
         message: error instanceof Error ? error.message : "Failed to reach PayHero.",
+        debug_version: "payments-debug-v2",
         diagnostic: {
           stage: "fetch",
           request_payload: payload,
@@ -381,11 +341,11 @@ async function handleInitiate(req: Request): Promise<Response> {
   if (!res.ok) {
     const payheroMessage =
       firstString(
-        payheroData.message,
-        payheroData.error,
-        payheroData.detail,
-        payheroData.response_message,
-        payheroData.status_description,
+        (payheroData as Record<string, unknown>).message,
+        (payheroData as Record<string, unknown>).error,
+        (payheroData as Record<string, unknown>).detail,
+        (payheroData as Record<string, unknown>).response_message,
+        (payheroData as Record<string, unknown>).status_description,
       ) || "PayHero initiation failed.";
 
     await updateDepositStatus(depositId, {
@@ -397,6 +357,7 @@ async function handleInitiate(req: Request): Promise<Response> {
       {
         error: "PAYMENT_INIT_FAILED",
         message: payheroMessage,
+        debug_version: "payments-debug-v2",
         diagnostic: {
           stage: "payhero_rejected",
           payhero_status: res.status,
@@ -409,43 +370,27 @@ async function handleInitiate(req: Request): Promise<Response> {
   }
 
   const providerReference = firstString(
-    payheroData.reference,
-    payheroData.checkout_request_id,
-    payheroData.CheckoutRequestID,
-    payheroData.transaction_reference,
-    payheroData.id,
+    (payheroData as Record<string, unknown>).reference,
+    (payheroData as Record<string, unknown>).checkout_request_id,
+    (payheroData as Record<string, unknown>).CheckoutRequestID,
+    (payheroData as Record<string, unknown>).transaction_reference,
+    (payheroData as Record<string, unknown>).id,
   );
 
   const merchantReference = firstString(
-    payheroData.merchant_request_id,
-    payheroData.MerchantRequestID,
-    payheroData.request_id,
+    (payheroData as Record<string, unknown>).merchant_request_id,
+    (payheroData as Record<string, unknown>).MerchantRequestID,
+    (payheroData as Record<string, unknown>).request_id,
   );
 
-  try {
-    await updateDepositStatus(depositId, {
-      status: "processing",
-      provider: "payhero",
-      phone: normalizedPhone,
-      external_ref: externalReference,
-      checkout_request_id: providerReference,
-      merchant_request_id: merchantReference,
-    });
-  } catch (error) {
-    console.error("Failed saving PayHero refs:", error);
-
-    return jsonResponse(
-      {
-        error: "DB_UPDATE_FAILED",
-        message: error instanceof Error ? error.message : "Failed to save PayHero references.",
-        diagnostic: {
-          payhero_response: payheroData,
-          request_payload: payload,
-        },
-      },
-      500,
-    );
-  }
+  await updateDepositStatus(depositId, {
+    status: "processing",
+    provider: "payhero",
+    phone: normalizedPhone,
+    external_ref: externalReference,
+    checkout_request_id: providerReference,
+    merchant_request_id: merchantReference,
+  });
 
   return jsonResponse({
     success: true,
