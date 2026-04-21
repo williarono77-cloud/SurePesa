@@ -120,6 +120,24 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
     setStatus("initiating");
 
     try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+
+        if (sessionError) {
+          throw new Error(sessionError.message || "Failed to check session.");
+        }
+        
+        const accessToken = sessionData?.session?.access_token;
+        const userId = sessionData?.session?.user?.id;
+        
+        console.log("Deposit session check:", {
+          hasSession: Boolean(sessionData?.session),
+          hasAccessToken: Boolean(accessToken),
+          userId: userId || null,
+        });
+        
+        if (!accessToken || !userId) {
+          throw new Error("Please sign in before making a deposit.");
+        }
       const { data: depositData, error: depositError } = await supabase.rpc("deposit_initiate", {
         p_amount_cents: amountCents,
         p_phone: normalizedPhone,
