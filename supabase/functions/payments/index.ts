@@ -341,6 +341,9 @@ async function handleInitiate(req: Request): Promise<Response> {
       provider: "payhero",
       phone: normalizedPhone,
       external_ref: externalReference,
+      checkout_request_id: providerReference,
+      merchant_request_id: merchantReference,
+      provider_reference: payheroReference,
     });
   } catch (error) {
     return jsonResponse(
@@ -453,6 +456,10 @@ async function handleInitiate(req: Request): Promise<Response> {
     (payheroData as Record<string, unknown>).MerchantRequestID,
     (payheroData as Record<string, unknown>).request_id,
   );
+
+  const payheroReference = firstString(
+  (payheroData as Record<string, unknown>).reference,
+);
 
   try {
     await updateDepositStatus(depositId, {
