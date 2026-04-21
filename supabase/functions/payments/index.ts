@@ -162,6 +162,28 @@ async function broadcastDepositUpdate(depositId: string, payload: Record<string,
   await supabase.removeChannel(channel);
 }
 
+async function logIncomingRequest(tag: string, req: Request, parsedBody?: unknown) {
+  const url = new URL(req.url);
+
+  const headers: Record<string, string> = {};
+  for (const [key, value] of req.headers.entries()) {
+    headers[key] = value;
+  }
+
+  const query: Record<string, string> = {};
+  for (const [key, value] of url.searchParams.entries()) {
+    query[key] = value;
+  }
+
+  console.log(`${tag} request info:`, JSON.stringify({
+    method: req.method,
+    pathname: url.pathname,
+    query,
+    headers,
+    body: parsedBody ?? null,
+  }));
+}
+
 async function handleInitiate(req: Request): Promise<Response> {
   type InitiateBody = {
     deposit_id?: string;
@@ -477,6 +499,8 @@ async function handleWebhook(req: Request): Promise<Response> {
     return ok();
   }
 
+  await logIncomingRequest("PayHero webhook", req, body);
+
   console.log("PayHero webhook body:", JSON.stringify(body));
 
   const payload =
@@ -603,8 +627,18 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const path = url.pathname;
 
-  if (req.method === "POST" && (path.endsWith("/webhook") || path.includes("/payments/webhook"))) {
-    return handleWebhook(req);
+  if (path.endsWith("/webhook") || path.includes("/payments/webhook")) {
+    if (req.method === "POST") {
+      return handleWebhook(req);
+    }
+
+    if (req.method === "GET") {
+      await logIncomingRequest("PayHero webhook GET", req, null);
+      return jsonResponse({
+        success: true,
+        message: "Webhook GET received",
+      });
+    }
   }
 
   if (req.method === "POST") {
