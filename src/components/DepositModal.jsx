@@ -93,8 +93,6 @@ async function checkDepositStatus(targetDepositId) {
           message: nextMessage,
           source: "status_check",
           data,
-          clearStatusDelayTimer();
-          clearStatusPollInterval();
         });
       }
 
