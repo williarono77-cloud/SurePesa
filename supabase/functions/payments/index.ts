@@ -55,11 +55,7 @@ function mapPayheroStatus(rawStatus: unknown): "success" | "failed" | "processin
   const normalized = String(rawStatus ?? "").trim().toUpperCase();
 
   if (normalized === "SUCCESS" || normalized === "APPROVED") return "success";
-  if (
-    normalized === "QUEUED" ||
-    normalized === "PENDING" ||
-    normalized === "PROCESSING"
-  ) {
+  if (normalized === "QUEUED" || normalized === "PENDING" || normalized === "PROCESSING") {
     return "processing";
   }
 
@@ -206,17 +202,11 @@ async function handleInitiate(req: Request): Promise<Response> {
   const normalizedPhone = normalizePhone(body.phone);
 
   if (!depositId) {
-    return jsonResponse(
-      { error: "INVALID_INPUT", message: "deposit_id is required." },
-      400,
-    );
+    return jsonResponse({ error: "INVALID_INPUT", message: "deposit_id is required." }, 400);
   }
 
   if (!Number.isFinite(amountCents) || amountCents <= 0) {
-    return jsonResponse(
-      { error: "INVALID_INPUT", message: "amount_cents must be a positive number." },
-      400,
-    );
+    return jsonResponse({ error: "INVALID_INPUT", message: "amount_cents must be a positive number." }, 400);
   }
 
   if (!normalizedPhone || normalizedPhone.length !== 12 || !normalizedPhone.startsWith("254")) {
@@ -279,10 +269,7 @@ async function handleInitiate(req: Request): Promise<Response> {
 
   if (depositError) {
     console.error("Deposit lookup failed:", depositError);
-    return jsonResponse(
-      { error: "DEPOSIT_LOOKUP_FAILED", message: depositError.message },
-      500,
-    );
+    return jsonResponse({ error: "DEPOSIT_LOOKUP_FAILED", message: depositError.message }, 500);
   }
 
   if (!deposit?.id) {
@@ -336,12 +323,12 @@ async function handleInitiate(req: Request): Promise<Response> {
   const amountKes = amountCents / 100;
 
   try {
-  await updateDepositStatus(depositId, {
-    status: "processing",
-    provider: "payhero",
-    phone: normalizedPhone,
-    external_ref: externalReference,
-  });
+    await updateDepositStatus(depositId, {
+      status: "processing",
+      provider: "payhero",
+      phone: normalizedPhone,
+      external_ref: externalReference,
+    });
   } catch (error) {
     return jsonResponse(
       {
@@ -398,7 +385,7 @@ async function handleInitiate(req: Request): Promise<Response> {
       {
         error: "PAYMENT_INIT_FAILED",
         message: error instanceof Error ? error.message : "Failed to reach PayHero.",
-        debug_version: "payments-debug-v3",
+        debug_version: "payments-final-v1",
         diagnostic: {
           stage: "fetch",
           request_payload: payload,
@@ -411,12 +398,12 @@ async function handleInitiate(req: Request): Promise<Response> {
   if (!res.ok) {
     const payheroMessage =
       firstString(
-        (payheroData as Record<string, unknown>).message,
-        (payheroData as Record<string, unknown>).error,
-        (payheroData as Record<string, unknown>).detail,
-        (payheroData as Record<string, unknown>).response_message,
-        (payheroData as Record<string, unknown>).status_description,
-        (payheroData as Record<string, unknown>).error_message,
+        payheroData.message,
+        payheroData.error,
+        payheroData.detail,
+        payheroData.response_message,
+        payheroData.status_description,
+        payheroData.error_message,
       ) || "PayHero initiation failed.";
 
     await updateDepositStatus(depositId, {
@@ -428,7 +415,7 @@ async function handleInitiate(req: Request): Promise<Response> {
       {
         error: "PAYMENT_INIT_FAILED",
         message: payheroMessage,
-        debug_version: "payments-debug-v3",
+        debug_version: "payments-final-v1",
         diagnostic: {
           stage: "payhero_rejected",
           payhero_status: res.status,
@@ -441,22 +428,22 @@ async function handleInitiate(req: Request): Promise<Response> {
   }
 
   const providerReference = firstString(
-    (payheroData as Record<string, unknown>).reference,
-    (payheroData as Record<string, unknown>).checkout_request_id,
-    (payheroData as Record<string, unknown>).CheckoutRequestID,
-    (payheroData as Record<string, unknown>).transaction_reference,
-    (payheroData as Record<string, unknown>).id,
+    payheroData.reference,
+    payheroData.checkout_request_id,
+    payheroData.CheckoutRequestID,
+    payheroData.transaction_reference,
+    payheroData.id,
   );
 
   const merchantReference = firstString(
-    (payheroData as Record<string, unknown>).merchant_request_id,
-    (payheroData as Record<string, unknown>).MerchantRequestID,
-    (payheroData as Record<string, unknown>).request_id,
+    payheroData.merchant_request_id,
+    payheroData.MerchantRequestID,
+    payheroData.request_id,
   );
 
   const payheroReference = firstString(
-  (payheroData as Record<string, unknown>).reference,
-);
+    payheroData.reference,
+  );
 
   try {
     await updateDepositStatus(depositId, {
@@ -501,17 +488,18 @@ async function handleWebhook(req: Request): Promise<Response> {
   try {
     body = await req.json();
   } catch {
+    await logIncomingRequest("PayHero webhook invalid-json", req, null);
     return ok();
   }
 
   await logIncomingRequest("PayHero webhook", req, body);
 
-  console.log("PayHero webhook body:", JSON.stringify(body));
-
   const payload =
     body.response && typeof body.response === "object"
       ? (body.response as Record<string, unknown>)
       : body;
+
+  console.log("PayHero webhook body:", JSON.stringify(payload));
 
   const providerReference = firstString(
     payload.reference,
@@ -540,12 +528,12 @@ async function handleWebhook(req: Request): Promise<Response> {
   const deposit = await findDepositForWebhook(externalReference, providerReference);
 
   if (!deposit?.id) {
-    console.log("PayHero webhook: deposit not found", {
+    console.log("PayHero webhook: deposit not found", JSON.stringify({
       externalReference,
       providerReference,
       merchantReference,
       payload,
-    });
+    }));
     return ok();
   }
 
@@ -564,14 +552,15 @@ async function handleWebhook(req: Request): Promise<Response> {
     );
   }
 
-  console.log("PayHero webhook resolved refs:", {
+  console.log("PayHero webhook resolved refs:", JSON.stringify({
+    deposit_id: deposit.id,
     externalReference,
     providerReference,
     merchantReference,
     statusText,
     resultCode,
     finalStatus,
-  });
+  }));
 
   if (providerReference && finalStatus === "processing") {
     const verifyData = await verifyPayheroReference(providerReference);
@@ -585,11 +574,11 @@ async function handleWebhook(req: Request): Promise<Response> {
       finalStatus = verifiedStatus;
     }
 
-    console.log("PayHero verify result:", {
+    console.log("PayHero verify result:", JSON.stringify({
       providerReference,
       verifyData,
       finalStatus,
-    });
+    }));
   }
 
   const { data: callbackData, error: callbackError } = await supabase.rpc("deposit_apply_callback", {
@@ -600,26 +589,26 @@ async function handleWebhook(req: Request): Promise<Response> {
     p_external_ref: deposit.external_ref ?? externalReference,
   });
 
-  console.log("deposit_apply_callback result:", {
+  console.log("deposit_apply_callback result:", JSON.stringify({
     deposit_id: deposit.id,
     finalStatus,
     callbackData,
     callbackError,
-  });
+  }));
 
   if (callbackError) {
-    console.error("deposit_apply_callback failed:", callbackError);
+    console.error("deposit_apply_callback failed:", JSON.stringify(callbackError));
   }
 
-        await broadcastDepositUpdate(deposit.id, {
-      status: finalStatus,
-      message:
-        finalStatus === "success"
-          ? "Deposit confirmed. Wallet updated successfully."
-          : String(payload.ResultDesc ?? payload.result_description ?? "Payment failed."),
-      checkout_request_id: providerReference,
-      merchant_request_id: merchantReference,
-    });
+  await broadcastDepositUpdate(deposit.id, {
+    status: finalStatus,
+    message:
+      finalStatus === "success"
+        ? "Deposit confirmed. Wallet updated successfully."
+        : String(payload.ResultDesc ?? payload.result_description ?? "Payment failed."),
+    checkout_request_id: providerReference,
+    merchant_request_id: merchantReference,
+  });
 
   return ok();
 }
@@ -762,6 +751,11 @@ async function handleStatusCheck(req: Request): Promise<Response> {
 }
 
 Deno.serve(async (req: Request) => {
+  console.log("PAYMENTS ENTRY HIT:", JSON.stringify({
+    method: req.method,
+    url: req.url,
+  }));
+
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -769,17 +763,17 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const path = url.pathname;
 
-      console.log("PAYMENTS ROUTER PATH:", JSON.stringify({
-      method: req.method,
-      path,
-      url: req.url,
-    }));
+  console.log("PAYMENTS ROUTER PATH:", JSON.stringify({
+    method: req.method,
+    path,
+    url: req.url,
+  }));
 
   if (path.endsWith("/webhook") || path.includes("/payments/webhook")) {
     if (req.method === "POST") {
       return handleWebhook(req);
     }
-  
+
     if (req.method === "GET") {
       await logIncomingRequest("PayHero webhook GET", req, null);
       return jsonResponse({
@@ -788,11 +782,11 @@ Deno.serve(async (req: Request) => {
       });
     }
   }
-  
+
   if (req.method === "POST" && path.includes("/status")) {
     return handleStatusCheck(req);
   }
-  
+
   if (req.method === "POST") {
     return handleInitiate(req);
   }
