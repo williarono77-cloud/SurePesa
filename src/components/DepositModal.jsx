@@ -9,6 +9,8 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
   const [status, setStatus] = useState("idle"); // idle | initiating | pending | success | failed
   const [message, setMessage] = useState(null);
   const closeTimerRef = useRef(null);
+  const statusDelayTimerRef = useRef(null);
+  const statusPollIntervalRef = useRef(null);
 
   const amountCents = useMemo(() => {
     const n = Number(amount);
@@ -35,10 +37,98 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
     }
   }
 
+function clearStatusDelayTimer() {
+  if (statusDelayTimerRef.current) {
+    clearTimeout(statusDelayTimerRef.current);
+    statusDelayTimerRef.current = null;
+  }
+}
+
+function clearStatusPollInterval() {
+  if (statusPollIntervalRef.current) {
+    clearInterval(statusPollIntervalRef.current);
+    statusPollIntervalRef.current = null;
+  }
+}
+
+function clearAllTimers() {
+  clearCloseTimer();
+  clearStatusDelayTimer();
+  clearStatusPollInterval();
+}
+async function checkDepositStatus(targetDepositId) {
+  if (!targetDepositId) return;
+
+  try {
+    const { data, error } = await supabase.functions.invoke("payments/status", {
+      body: { deposit_id: targetDepositId },
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const nextStatus = String(data?.status || "").toLowerCase();
+    const nextMessage =
+      data?.message ||
+      (nextStatus === "success"
+        ? "Deposit confirmed. Wallet updated successfully."
+        : nextStatus === "failed"
+        ? "Payment failed."
+        : "Payment status still pending.");
+
+    if (nextStatus === "success" || nextStatus === "approved" || nextStatus === "completed") {
+      setStatus("success");
+      setLoading(false);
+      setMessage({ type: "success", text: nextMessage });
+
+      clearStatusDelayTimer();
+      clearStatusPollInterval();
+      clearCloseTimer();
+
+      if (onApproved) {
+        onApproved({
+          id: targetDepositId,
+          status: nextStatus,
+          message: nextMessage,
+          source: "status_check",
+          data,
+          clearStatusDelayTimer();
+          clearStatusPollInterval();
+        });
+      }
+
+      closeTimerRef.current = setTimeout(() => {
+        onClose();
+      }, 1200);
+
+      return;
+    }
+
+    if (nextStatus === "failed" || nextStatus === "rejected") {
+      setStatus("failed");
+      setLoading(false);
+      clearStatusDelayTimer();
+      clearStatusPollInterval();
+      setMessage({ type: "error", text: nextMessage });
+
+      clearStatusDelayTimer();
+      clearStatusPollInterval();
+      return;
+    }
+
+    setStatus("pending");
+    setLoading(false);
+    setMessage({ type: "info", text: nextMessage });
+  } catch (e) {
+    console.error("Deposit status check failed:", e);
+  }
+}
+  
   useEffect(() => {
     if (!isOpen) return;
 
-    clearCloseTimer();
+    clearAllTimers();
     setLoading(false);
     setAmount("");
     setPhone("07XXXXXXXX");
@@ -49,7 +139,7 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
 
   useEffect(() => {
     return () => {
-      clearCloseTimer();
+      clearAllTimers();
     };
   }, []);
 
@@ -184,6 +274,30 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
       supabase.removeChannel(channel);
     };
   }, [depositId, onApproved, onClose]);
+
+  useEffect(() => {
+  if (!isOpen || !depositId || status !== "pending") {
+    clearStatusDelayTimer();
+    clearStatusPollInterval();
+    return;
+  }
+
+  clearStatusDelayTimer();
+  clearStatusPollInterval();
+
+  statusDelayTimerRef.current = setTimeout(() => {
+    checkDepositStatus(depositId);
+
+    statusPollIntervalRef.current = setInterval(() => {
+      checkDepositStatus(depositId);
+    }, 5000);
+  }, 25000);
+
+  return () => {
+    clearStatusDelayTimer();
+    clearStatusPollInterval();
+  };
+}, [isOpen, depositId, status]);
 
   async function handleStartDeposit() {
     setMessage(null);
