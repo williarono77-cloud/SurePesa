@@ -382,7 +382,7 @@ async function handleInitiate(req: Request): Promise<Response> {
     (payheroData as Record<string, unknown>).MerchantRequestID,
     (payheroData as Record<string, unknown>).request_id,
   );
-
+console.log("PayHero webhook body:", JSON.stringify(body));
   await updateDepositStatus(depositId, {
     status: "processing",
     provider: "payhero",
@@ -482,15 +482,26 @@ async function handleWebhook(req: Request): Promise<Response> {
     return ok();
   }
 
-  await supabase.rpc("deposit_apply_callback", {
-    p_deposit_id: deposit.id,
-    p_status: finalStatus === "success" ? "success" : "failed",
-    p_checkout_request_id: providerReference,
-    p_merchant_request_id: merchantReference,
-    p_external_ref: deposit.external_ref ?? externalReference,
-  });
+const { data: callbackData, error: callbackError } = await supabase.rpc("deposit_apply_callback", {
+  p_deposit_id: deposit.id,
+  p_status: finalStatus === "success" ? "success" : "failed",
+  p_checkout_request_id: providerReference,
+  p_merchant_request_id: merchantReference,
+  p_external_ref: deposit.external_ref ?? externalReference,
+});
 
-  return ok();
+console.log("deposit_apply_callback result:", {
+  deposit_id: deposit.id,
+  finalStatus,
+  callbackData,
+  callbackError,
+});
+
+if (callbackError) {
+  console.error("deposit_apply_callback failed:", callbackError);
+}
+
+return ok();
 }
 
 Deno.serve(async (req: Request) => {
@@ -510,4 +521,5 @@ Deno.serve(async (req: Request) => {
   }
 
   return jsonResponse({ error: "NOT_FOUND" }, 404);
+  
 });
