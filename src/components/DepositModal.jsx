@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient.js";
 
 export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved }) {
@@ -6,8 +6,9 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
   const [amount, setAmount] = useState("");
   const [phone, setPhone] = useState("07XXXXXXXX");
   const [depositId, setDepositId] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | initiating | pending | approved | failed
+  const [status, setStatus] = useState("idle"); // idle | initiating | pending | success | failed
   const [message, setMessage] = useState(null);
+  const closeTimerRef = useRef(null);
 
   const amountCents = useMemo(() => {
     const n = Number(amount);
@@ -27,9 +28,17 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
     return digits;
   }
 
+  function clearCloseTimer() {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }
+
   useEffect(() => {
     if (!isOpen) return;
 
+    clearCloseTimer();
     setLoading(false);
     setAmount("");
     setPhone("07XXXXXXXX");
@@ -37,6 +46,12 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
     setStatus("idle");
     setMessage(null);
   }, [isOpen]);
+
+  useEffect(() => {
+    return () => {
+      clearCloseTimer();
+    };
+  }, []);
 
   useEffect(() => {
     if (!depositId) return;
@@ -52,17 +67,33 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
           filter: `id=eq.${depositId}`,
         },
         (payload) => {
-          const newStatus = payload?.new?.status;
+          const row = payload?.new || {};
+          const newStatus = String(row.status || "").toLowerCase();
+          const failureText =
+            row.failure_reason ||
+            row.admin_note ||
+            row.note ||
+            "Payment failed. Please try again.";
 
-          if (newStatus === "approved") {
-            setStatus("approved");
+          if (
+            newStatus === "success" ||
+            newStatus === "approved" ||
+            newStatus === "completed"
+          ) {
+            setStatus("success");
             setLoading(false);
             setMessage({
               type: "success",
               text: "Deposit confirmed. Wallet updated successfully.",
             });
 
-            if (onApproved) onApproved();
+            if (onApproved) onApproved(row);
+
+            clearCloseTimer();
+            closeTimerRef.current = setTimeout(() => {
+              onClose();
+            }, 1200);
+
             return;
           }
 
@@ -81,20 +112,17 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
             setLoading(false);
             setMessage({
               type: "error",
-              text:
-                payload?.new?.admin_note ||
-                payload?.new?.failure_reason ||
-                "Payment failed. Please try again.",
+              text: failureText,
             });
           }
-        }
+        },
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [depositId, onApproved]);
+  }, [depositId, onApproved, onClose]);
 
   if (!isOpen) return null;
 
@@ -122,22 +150,23 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
 
-        if (sessionError) {
-          throw new Error(sessionError.message || "Failed to check session.");
-        }
-        
-        const accessToken = sessionData?.session?.access_token;
-        const userId = sessionData?.session?.user?.id;
-        
-        console.log("Deposit session check:", {
-          hasSession: Boolean(sessionData?.session),
-          hasAccessToken: Boolean(accessToken),
-          userId: userId || null,
-        });
-        
-        if (!accessToken || !userId) {
-          throw new Error("Please sign in before making a deposit.");
-        }
+      if (sessionError) {
+        throw new Error(sessionError.message || "Failed to check session.");
+      }
+
+      const accessToken = sessionData?.session?.access_token;
+      const userId = sessionData?.session?.user?.id;
+
+      console.log("Deposit session check:", {
+        hasSession: Boolean(sessionData?.session),
+        hasAccessToken: Boolean(accessToken),
+        userId: userId || null,
+      });
+
+      if (!accessToken || !userId) {
+        throw new Error("Please sign in before making a deposit.");
+      }
+
       const { data: depositData, error: depositError } = await supabase.rpc("deposit_initiate", {
         p_amount_cents: amountCents,
         p_phone: normalizedPhone,
@@ -158,36 +187,51 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
 
       const { data: paymentData, error: paymentError } = await supabase.functions.invoke("payments", {
         body: {
-          action: "initiate",
           deposit_id: createdDepositId,
           amount_cents: amountCents,
           phone: normalizedPhone,
         },
       });
 
-      if (paymentError) throw paymentError;
+      if (paymentError) {
+        throw paymentError;
+      }
 
-      if (paymentData?.ok === false) {
-        throw new Error(paymentData?.error || "Failed to start payment.");
+      if (!paymentData?.success) {
+        throw new Error(paymentData?.message || "Failed to start payment.");
       }
 
       setStatus("pending");
       setMessage({
         type: "info",
-        text: "Payment request sent. Check your phone and complete the prompt.",
+        text:
+          paymentData?.message ||
+          "Payment request sent. Check your phone and complete the prompt.",
       });
 
-      if (onSubmitted) onSubmitted();
+      if (onSubmitted) {
+        onSubmitted({
+          depositId: createdDepositId,
+          status: "processing",
+          message:
+            paymentData?.message ||
+            "Payment request sent. Check your phone and complete the prompt.",
+        });
+      }
     } catch (e) {
       setStatus("failed");
+      setLoading(false);
       setMessage({
         type: "error",
         text: e?.message || "Failed to start payment.",
       });
+      return;
     } finally {
       setLoading(false);
     }
   }
+
+  const disableInputs = loading || status === "pending" || status === "success";
 
   return (
     <div
@@ -217,7 +261,7 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
             onChange={(e) => setAmount(e.target.value)}
             placeholder="e.g. 500"
             inputMode="decimal"
-            disabled={loading || status === "pending" || status === "approved"}
+            disabled={disableInputs}
           />
         </div>
 
@@ -229,21 +273,21 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
             placeholder="e.g. 07XXXXXXXX or 2547XXXXXXXX"
             inputMode="tel"
             autoComplete="tel"
-            disabled={loading || status === "pending" || status === "approved"}
+            disabled={disableInputs}
           />
         </div>
 
         <div className="section">
           <button
             onClick={handleStartDeposit}
-            disabled={loading || status === "pending" || status === "approved"}
+            disabled={disableInputs}
             type="button"
           >
             {loading
               ? "Please wait..."
               : status === "pending"
               ? "Payment Pending"
-              : status === "approved"
+              : status === "success"
               ? "Deposit Complete"
               : "Pay Now"}
           </button>
@@ -254,9 +298,15 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
             </p>
           ) : null}
 
-          {status === "approved" ? (
+          {status === "success" ? (
             <p className="muted" style={{ marginTop: "0.5rem" }}>
-              Payment confirmed successfully.
+              Payment confirmed successfully. Closing…
+            </p>
+          ) : null}
+
+          {status === "failed" ? (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              Payment did not complete. You can try again.
             </p>
           ) : null}
         </div>
