@@ -571,16 +571,6 @@ async function handleWebhook(req: Request): Promise<Response> {
     p_external_ref: deposit.external_ref ?? externalReference,
   });
 
-      await broadcastDepositUpdate(deposit.id, {
-      status: finalStatus,
-      message:
-        finalStatus === "success"
-          ? "Deposit confirmed. Wallet updated successfully."
-          : String(payload.ResultDesc ?? payload.result_description ?? "Payment failed."),
-      checkout_request_id: providerReference,
-      merchant_request_id: merchantReference,
-    });
-
   console.log("deposit_apply_callback result:", {
     deposit_id: deposit.id,
     finalStatus,
@@ -591,6 +581,16 @@ async function handleWebhook(req: Request): Promise<Response> {
   if (callbackError) {
     console.error("deposit_apply_callback failed:", callbackError);
   }
+
+        await broadcastDepositUpdate(deposit.id, {
+      status: finalStatus,
+      message:
+        finalStatus === "success"
+          ? "Deposit confirmed. Wallet updated successfully."
+          : String(payload.ResultDesc ?? payload.result_description ?? "Payment failed."),
+      checkout_request_id: providerReference,
+      merchant_request_id: merchantReference,
+    });
 
   return ok();
 }
