@@ -469,6 +469,7 @@ async function handleInitiate(req: Request): Promise<Response> {
       external_ref: externalReference,
       checkout_request_id: providerReference,
       merchant_request_id: merchantReference,
+      provider_reference: payheroReference,
     });
   } catch (error) {
     return jsonResponse(
