@@ -403,7 +403,6 @@ console.log("PayHero webhook body:", JSON.stringify(body));
     message: "STK prompt sent. Check phone to complete payment.",
   });
 }
-
 async function handleWebhook(req: Request): Promise<Response> {
   const ok = () => new Response(null, { status: 200, headers: corsHeaders });
 
@@ -443,14 +442,7 @@ async function handleWebhook(req: Request): Promise<Response> {
     payload.mpesa_receipt_number,
     payload.MpesaReceiptNumber,
     payload.mpesa_code,
-  );
-
-  const callbackRawStatus = firstString(
-    payload.status,
-    payload.Status,
-    payload.result_code,
-    payload.ResultCode,
-    payload.state,
+    payload.MpesaReceiptNumber,
   );
 
   const deposit = await findDepositForWebhook(externalReference, providerReference);
@@ -465,28 +457,35 @@ async function handleWebhook(req: Request): Promise<Response> {
     return ok();
   }
 
-  let finalStatus = mapPayheroStatus(callbackRawStatus);
+  const statusText = String(payload.Status ?? payload.status ?? "").trim().toUpperCase();
+  const resultCode = String(payload.ResultCode ?? payload.result_code ?? "").trim();
 
-  if (String(payload.Status ?? "").trim().toUpperCase() === "FAILED") {
+  let finalStatus: "success" | "failed" | "processing" = "processing";
+
+  if (statusText === "SUCCESS" || resultCode === "0") {
+    finalStatus = "success";
+  } else if (statusText === "FAILED") {
     finalStatus = "failed";
+  } else {
+    finalStatus = mapPayheroStatus(payload.Status ?? payload.status ?? payload.ResultCode ?? payload.result_code);
   }
 
-  if (String(payload.Status ?? "").trim().toUpperCase() === "SUCCESS") {
-    finalStatus = "success";
-  }
+  console.log("PayHero webhook resolved refs:", {
+    externalReference,
+    providerReference,
+    merchantReference,
+    statusText,
+    resultCode,
+    finalStatus,
+  });
 
-  if (String(payload.ResultCode ?? "") === "0") {
-    finalStatus = "success";
-  }
-
-  if (providerReference) {
+  if (providerReference && finalStatus === "processing") {
     const verifyData = await verifyPayheroReference(providerReference);
-    const verifiedStatus = verifyData
-      ? mapPayheroStatus(
-          (verifyData as Record<string, unknown>).status ??
-            (verifyData as Record<string, unknown>).payment_status,
-        )
-      : null;
+    const verifiedRawStatus =
+      (verifyData as Record<string, unknown> | null)?.status ??
+      (verifyData as Record<string, unknown> | null)?.payment_status;
+
+    const verifiedStatus = verifyData ? mapPayheroStatus(verifiedRawStatus) : null;
 
     if (verifiedStatus) {
       finalStatus = verifiedStatus;
@@ -520,44 +519,3 @@ async function handleWebhook(req: Request): Promise<Response> {
 
   return ok();
 }
-const { data: callbackData, error: callbackError } = await supabase.rpc("deposit_apply_callback", {
-  p_deposit_id: deposit.id,
-  p_status: finalStatus === "success" ? "success" : "failed",
-  p_checkout_request_id: providerReference,
-  p_merchant_request_id: merchantReference,
-  p_external_ref: deposit.external_ref ?? externalReference,
-});
-
-console.log("deposit_apply_callback result:", {
-  deposit_id: deposit.id,
-  finalStatus,
-  callbackData,
-  callbackError,
-});
-
-if (callbackError) {
-  console.error("deposit_apply_callback failed:", callbackError);
-}
-
-return ok();
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
-  }
-
-  const url = new URL(req.url);
-  const path = url.pathname;
-
-  if (req.method === "POST" && (path.endsWith("/webhook") || path.includes("/payments/webhook"))) {
-    return handleWebhook(req);
-  }
-
-  if (req.method === "POST") {
-    return handleInitiate(req);
-  }
-
-  return jsonResponse({ error: "NOT_FOUND" }, 404);
-  
-});
