@@ -141,6 +141,27 @@ async function findDepositForWebhook(
   return null;
 }
 
+async function broadcastDepositUpdate(depositId: string, payload: Record<string, unknown>) {
+  const channel = supabase.channel("deposit-updates");
+
+  await new Promise<void>((resolve) => {
+    channel.subscribe((status) => {
+      if (status === "SUBSCRIBED") resolve();
+    });
+  });
+
+  await channel.send({
+    type: "broadcast",
+    event: "deposit_update",
+    payload: {
+      deposit_id: depositId,
+      ...payload,
+    },
+  });
+
+  await supabase.removeChannel(channel);
+}
+
 async function handleInitiate(req: Request): Promise<Response> {
   type InitiateBody = {
     deposit_id?: string;
@@ -549,6 +570,16 @@ async function handleWebhook(req: Request): Promise<Response> {
     p_merchant_request_id: merchantReference,
     p_external_ref: deposit.external_ref ?? externalReference,
   });
+
+      await broadcastDepositUpdate(deposit.id, {
+      status: finalStatus,
+      message:
+        finalStatus === "success"
+          ? "Deposit confirmed. Wallet updated successfully."
+          : String(payload.ResultDesc ?? payload.result_description ?? "Payment failed."),
+      checkout_request_id: providerReference,
+      merchant_request_id: merchantReference,
+    });
 
   console.log("deposit_apply_callback result:", {
     deposit_id: deposit.id,
