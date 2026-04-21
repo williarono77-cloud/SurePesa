@@ -336,15 +336,12 @@ async function handleInitiate(req: Request): Promise<Response> {
   const amountKes = amountCents / 100;
 
   try {
-    await updateDepositStatus(depositId, {
-      status: "processing",
-      provider: "payhero",
-      phone: normalizedPhone,
-      external_ref: externalReference,
-      checkout_request_id: providerReference,
-      merchant_request_id: merchantReference,
-      provider_reference: payheroReference,
-    });
+  await updateDepositStatus(depositId, {
+    status: "processing",
+    provider: "payhero",
+    phone: normalizedPhone,
+    external_ref: externalReference,
+  });
   } catch (error) {
     return jsonResponse(
       {
