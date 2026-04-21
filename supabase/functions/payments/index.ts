@@ -626,6 +626,143 @@ async function handleWebhook(req: Request): Promise<Response> {
   return ok();
 }
 
+async function handleStatusCheck(req: Request): Promise<Response> {
+  let body: Record<string, unknown> = {};
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "INVALID_JSON", message: "Request body must be valid JSON." }, 400);
+  }
+
+  const depositId = String(body.deposit_id ?? "").trim();
+  if (!depositId) {
+    return jsonResponse({ error: "INVALID_INPUT", message: "deposit_id is required." }, 400);
+  }
+
+  const { data: deposit, error: depositError } = await supabase
+    .from("deposits")
+    .select("id, status, external_ref, checkout_request_id, merchant_request_id, provider_reference")
+    .eq("id", depositId)
+    .maybeSingle();
+
+  if (depositError) {
+    return jsonResponse({ error: "DEPOSIT_LOOKUP_FAILED", message: depositError.message }, 500);
+  }
+
+  if (!deposit?.id) {
+    return jsonResponse({ error: "DEPOSIT_NOT_FOUND", message: "Deposit not found." }, 404);
+  }
+
+  const currentStatus = String(deposit.status ?? "").trim().toLowerCase();
+  if (["success", "approved", "completed", "failed", "rejected"].includes(currentStatus)) {
+    return jsonResponse({
+      success: true,
+      deposit_id: deposit.id,
+      status: currentStatus,
+      message:
+        currentStatus === "success" || currentStatus === "approved" || currentStatus === "completed"
+          ? "Deposit confirmed. Wallet updated successfully."
+          : "Payment failed.",
+      source: "database",
+    });
+  }
+
+  const payheroReference = firstString(
+    deposit.provider_reference,
+    deposit.checkout_request_id,
+  );
+
+  if (!payheroReference) {
+    return jsonResponse({
+      error: "REFERENCE_MISSING",
+      message: "No PayHero tracking reference found on deposit.",
+    }, 400);
+  }
+
+  const verifyData = await verifyPayheroReference(payheroReference);
+
+  console.log("PayHero status check result:", JSON.stringify({
+    deposit_id: deposit.id,
+    payheroReference,
+    verifyData,
+  }));
+
+  if (!verifyData) {
+    return jsonResponse({
+      success: false,
+      deposit_id: deposit.id,
+      status: "processing",
+      message: "Payment status still pending.",
+      source: "payhero_status_unavailable",
+    });
+  }
+
+  const rawStatus =
+    (verifyData as Record<string, unknown>).status ??
+    (verifyData as Record<string, unknown>).payment_status;
+
+  const mappedStatus = mapPayheroStatus(rawStatus);
+
+  if (mappedStatus === "processing") {
+    return jsonResponse({
+      success: true,
+      deposit_id: deposit.id,
+      status: "processing",
+      message: "Payment status still pending.",
+      source: "payhero",
+      payhero_response: verifyData,
+    });
+  }
+
+  const finalStatus = mappedStatus === "success" ? "success" : "failed";
+
+  const { data: callbackData, error: callbackError } = await supabase.rpc("deposit_apply_callback", {
+    p_deposit_id: deposit.id,
+    p_status: finalStatus,
+    p_checkout_request_id: deposit.checkout_request_id,
+    p_merchant_request_id: deposit.merchant_request_id,
+    p_external_ref: deposit.external_ref,
+  });
+
+  console.log("deposit_apply_callback from status-check:", JSON.stringify({
+    deposit_id: deposit.id,
+    finalStatus,
+    callbackData,
+    callbackError,
+  }));
+
+  if (callbackError) {
+    return jsonResponse({
+      error: "CALLBACK_APPLY_FAILED",
+      message: callbackError.message,
+      deposit_id: deposit.id,
+      payhero_response: verifyData,
+    }, 500);
+  }
+
+  await broadcastDepositUpdate(deposit.id, {
+    status: finalStatus,
+    message:
+      finalStatus === "success"
+        ? "Deposit confirmed. Wallet updated successfully."
+        : "Payment failed.",
+    checkout_request_id: deposit.checkout_request_id,
+    merchant_request_id: deposit.merchant_request_id,
+  });
+
+  return jsonResponse({
+    success: true,
+    deposit_id: deposit.id,
+    status: finalStatus,
+    message:
+      finalStatus === "success"
+        ? "Deposit confirmed. Wallet updated successfully."
+        : "Payment failed.",
+    source: "payhero_status_check",
+    payhero_response: verifyData,
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -634,11 +771,17 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const path = url.pathname;
 
+      console.log("PAYMENTS ROUTER PATH:", JSON.stringify({
+      method: req.method,
+      path,
+      url: req.url,
+    }));
+
   if (path.endsWith("/webhook") || path.includes("/payments/webhook")) {
     if (req.method === "POST") {
       return handleWebhook(req);
     }
-
+  
     if (req.method === "GET") {
       await logIncomingRequest("PayHero webhook GET", req, null);
       return jsonResponse({
@@ -647,7 +790,11 @@ Deno.serve(async (req: Request) => {
       });
     }
   }
-
+  
+  if (req.method === "POST" && path.includes("/status")) {
+    return handleStatusCheck(req);
+  }
+  
   if (req.method === "POST") {
     return handleInitiate(req);
   }
