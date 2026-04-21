@@ -414,42 +414,70 @@ async function handleWebhook(req: Request): Promise<Response> {
     return ok();
   }
 
-  console.log("PayHero webhook body:", body);
+  console.log("PayHero webhook body:", JSON.stringify(body));
+
+  const payload =
+    body.response && typeof body.response === "object"
+      ? (body.response as Record<string, unknown>)
+      : body;
 
   const providerReference = firstString(
-    body.reference,
-    body.checkout_request_id,
-    body.CheckoutRequestID,
-    body.transaction_reference,
-    body.id,
+    payload.reference,
+    payload.checkout_request_id,
+    payload.CheckoutRequestID,
+    payload.transaction_reference,
+    payload.id,
   );
 
   const externalReference = firstString(
-    body.external_reference,
-    body.externalRef,
-    body.tx_ref,
-    body.account_reference,
+    payload.external_reference,
+    payload.ExternalReference,
+    payload.externalRef,
+    payload.tx_ref,
+    payload.account_reference,
   );
 
   const merchantReference = firstString(
-    body.merchant_request_id,
-    body.MerchantRequestID,
-    body.mpesa_receipt_number,
-    body.mpesa_code,
+    payload.merchant_request_id,
+    payload.MerchantRequestID,
+    payload.mpesa_receipt_number,
+    payload.MpesaReceiptNumber,
+    payload.mpesa_code,
   );
 
-  const callbackRawStatus = firstString(body.status, body.result_code, body.state);
+  const callbackRawStatus = firstString(
+    payload.status,
+    payload.Status,
+    payload.result_code,
+    payload.ResultCode,
+    payload.state,
+  );
+
   const deposit = await findDepositForWebhook(externalReference, providerReference);
 
   if (!deposit?.id) {
     console.log("PayHero webhook: deposit not found", {
       externalReference,
       providerReference,
+      merchantReference,
+      payload,
     });
     return ok();
   }
 
   let finalStatus = mapPayheroStatus(callbackRawStatus);
+
+  if (String(payload.Status ?? "").trim().toUpperCase() === "FAILED") {
+    finalStatus = "failed";
+  }
+
+  if (String(payload.Status ?? "").trim().toUpperCase() === "SUCCESS") {
+    finalStatus = "success";
+  }
+
+  if (String(payload.ResultCode ?? "") === "0") {
+    finalStatus = "success";
+  }
 
   if (providerReference) {
     const verifyData = await verifyPayheroReference(providerReference);
@@ -471,17 +499,27 @@ async function handleWebhook(req: Request): Promise<Response> {
     });
   }
 
-  if (finalStatus === "processing") {
-    await updateDepositStatus(deposit.id, {
-      status: "processing",
-      checkout_request_id: providerReference ?? deposit.checkout_request_id,
-      merchant_request_id: merchantReference,
-      external_ref: deposit.external_ref ?? externalReference,
-    }).catch(() => null);
+  const { data: callbackData, error: callbackError } = await supabase.rpc("deposit_apply_callback", {
+    p_deposit_id: deposit.id,
+    p_status: finalStatus === "success" ? "success" : "failed",
+    p_checkout_request_id: providerReference,
+    p_merchant_request_id: merchantReference,
+    p_external_ref: deposit.external_ref ?? externalReference,
+  });
 
-    return ok();
+  console.log("deposit_apply_callback result:", {
+    deposit_id: deposit.id,
+    finalStatus,
+    callbackData,
+    callbackError,
+  });
+
+  if (callbackError) {
+    console.error("deposit_apply_callback failed:", callbackError);
   }
 
+  return ok();
+}
 const { data: callbackData, error: callbackError } = await supabase.rpc("deposit_apply_callback", {
   p_deposit_id: deposit.id,
   p_status: finalStatus === "success" ? "success" : "failed",
