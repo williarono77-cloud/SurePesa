@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient.js";
 
+const INITIAL_STATUS_DELAY_MS = 6000;
+const RETRY_DELAY_MS = 3000;
+const MAX_STATUS_ATTEMPTS = 3;
+
 export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved }) {
   const [loading, setLoading] = useState(false);
   const [amount, setAmount] = useState("");
@@ -8,9 +12,11 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
   const [depositId, setDepositId] = useState(null);
   const [status, setStatus] = useState("idle"); // idle | initiating | pending | success | failed
   const [message, setMessage] = useState(null);
+
   const closeTimerRef = useRef(null);
-  const statusDelayTimerRef = useRef(null);
-  const statusPollIntervalRef = useRef(null);
+  const statusTimerRef = useRef(null);
+  const statusAttemptsRef = useRef(0);
+  const pollingStoppedRef = useRef(false);
 
   const amountCents = useMemo(() => {
     const n = Number(amount);
@@ -37,96 +43,155 @@ export default function DepositModal({ isOpen, onClose, onSubmitted, onApproved 
     }
   }
 
-function clearStatusDelayTimer() {
-  if (statusDelayTimerRef.current) {
-    clearTimeout(statusDelayTimerRef.current);
-    statusDelayTimerRef.current = null;
+  function clearStatusTimer() {
+    if (statusTimerRef.current) {
+      clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
   }
-}
 
-function clearStatusPollInterval() {
-  if (statusPollIntervalRef.current) {
-    clearInterval(statusPollIntervalRef.current);
-    statusPollIntervalRef.current = null;
+  function clearAllTimers() {
+    clearCloseTimer();
+    clearStatusTimer();
   }
-}
 
-function clearAllTimers() {
-  clearCloseTimer();
-  clearStatusDelayTimer();
-  clearStatusPollInterval();
-}
-async function checkDepositStatus(targetDepositId) {
-  if (!targetDepositId) return;
+  function stopPolling() {
+    pollingStoppedRef.current = true;
+    clearStatusTimer();
+  }
 
-  try {
-    const { data, error } = await supabase.functions.invoke("payments/status", {
-      body: { deposit_id: targetDepositId },
+  function scheduleClose() {
+    clearCloseTimer();
+    closeTimerRef.current = setTimeout(() => {
+      onClose();
+    }, 1200);
+  }
+
+  function handleSuccess(nextMessage, payload = null, source = "unknown") {
+    stopPolling();
+    setLoading(false);
+    setStatus("success");
+    setMessage({
+      type: "success",
+      text: nextMessage || "Deposit confirmed. Wallet updated successfully.",
     });
 
-    if (error) {
-      throw error;
+    if (onApproved) {
+      onApproved({
+        ...(payload || {}),
+        id: payload?.id || depositId,
+        status: "success",
+        message: nextMessage || "Deposit confirmed. Wallet updated successfully.",
+        source,
+      });
     }
 
-    const nextStatus = String(data?.status || "").toLowerCase();
-    const nextMessage =
-      data?.message ||
-      (nextStatus === "success"
-        ? "Deposit confirmed. Wallet updated successfully."
-        : nextStatus === "failed"
-        ? "Payment failed."
-        : "Payment status still pending.");
+    scheduleClose();
+  }
 
-    if (nextStatus === "success" || nextStatus === "approved" || nextStatus === "completed") {
-      setStatus("success");
-      setLoading(false);
-      setMessage({ type: "success", text: nextMessage });
+  function handleFailure(nextMessage, payload = null) {
+    stopPolling();
+    setLoading(false);
+    setStatus("failed");
+    setMessage({
+      type: "error",
+      text: nextMessage || "Payment failed. Please try again.",
+    });
+  }
 
-      clearStatusDelayTimer();
-      clearStatusPollInterval();
-      clearCloseTimer();
+  function handlePending(nextMessage) {
+    setLoading(false);
+    setStatus("pending");
+    setMessage({
+      type: "info",
+      text: nextMessage || "Payment request sent. Check your phone and complete the prompt.",
+    });
+  }
 
-      if (onApproved) {
-        onApproved({
-          id: targetDepositId,
-          status: nextStatus,
-          message: nextMessage,
-          source: "status_check",
-          data,
-        });
+  async function checkDepositStatus(targetDepositId) {
+    if (!targetDepositId || pollingStoppedRef.current) return;
+
+    try {
+      const { data, error } = await supabase.functions.invoke("payments/status", {
+        body: { deposit_id: targetDepositId },
+      });
+
+      if (error) {
+        throw error;
       }
 
-      closeTimerRef.current = setTimeout(() => {
-        onClose();
-      }, 1200);
+      const nextStatus = String(data?.status || "").trim().toLowerCase();
+      const nextMessage =
+        data?.message ||
+        (nextStatus === "success"
+          ? "Deposit confirmed. Wallet updated successfully."
+          : nextStatus === "failed"
+          ? "Payment failed. Please try again."
+          : "Payment is still pending.");
 
-      return;
+      if (nextStatus === "success" || nextStatus === "approved" || nextStatus === "completed") {
+        handleSuccess(nextMessage, data, "manual_status_check");
+        return;
+      }
+
+      if (nextStatus === "failed" || nextStatus === "rejected") {
+        handleFailure(nextMessage, data);
+        return;
+      }
+
+      handlePending(nextMessage);
+
+      if (statusAttemptsRef.current >= MAX_STATUS_ATTEMPTS) {
+        stopPolling();
+        setMessage({
+          type: "info",
+          text: nextMessage || "Payment is still pending. Please wait a moment and try again if needed.",
+        });
+        return;
+      }
+
+      statusTimerRef.current = setTimeout(() => {
+        checkDepositStatus(targetDepositId);
+      }, RETRY_DELAY_MS);
+    } catch (e) {
+      console.error("Deposit status check failed:", e);
+
+      if (statusAttemptsRef.current >= MAX_STATUS_ATTEMPTS) {
+        stopPolling();
+        setLoading(false);
+        setMessage({
+          type: "error",
+          text: e?.message || "Failed to confirm payment status. Please try again.",
+        });
+        return;
+      }
+
+      statusTimerRef.current = setTimeout(() => {
+        checkDepositStatus(targetDepositId);
+      }, RETRY_DELAY_MS);
     }
-
-    if (nextStatus === "failed" || nextStatus === "rejected") {
-      setStatus("failed");
-      setLoading(false);
-      clearStatusDelayTimer();
-      clearStatusPollInterval();
-      setMessage({ type: "error", text: nextMessage });
-
-      clearStatusDelayTimer();
-      clearStatusPollInterval();
-      return;
-    }
-
-    setStatus("pending");
-    setLoading(false);
-    setMessage({ type: "info", text: nextMessage });
-  } catch (e) {
-    console.error("Deposit status check failed:", e);
   }
-}
-  
+
+  function startStatusPolling(targetDepositId) {
+    if (!targetDepositId) return;
+
+    stopPolling();
+    pollingStoppedRef.current = false;
+    statusAttemptsRef.current = 0;
+
+    clearStatusTimer();
+    statusTimerRef.current = setTimeout(() => {
+      checkDepositStatus(targetDepositId);
+    }, INITIAL_STATUS_DELAY_MS);
+  }
+
   useEffect(() => {
     if (!isOpen) return;
 
     clearAllTimers();
+    pollingStoppedRef.current = false;
+    statusAttemptsRef.current = 0;
+
     setLoading(false);
     setAmount("");
     setPhone("07XXXXXXXX");
@@ -137,6 +202,7 @@ async function checkDepositStatus(targetDepositId) {
 
   useEffect(() => {
     return () => {
+      stopPolling();
       clearAllTimers();
     };
   }, []);
@@ -156,7 +222,7 @@ async function checkDepositStatus(targetDepositId) {
         },
         (payload) => {
           const row = payload?.new || {};
-          const newStatus = String(row.status || "").toLowerCase();
+          const newStatus = String(row.status || "").trim().toLowerCase();
           const failureText =
             row.failure_reason ||
             row.admin_note ||
@@ -164,40 +230,17 @@ async function checkDepositStatus(targetDepositId) {
             "Payment failed. Please try again.";
 
           if (newStatus === "success" || newStatus === "approved" || newStatus === "completed") {
-            setStatus("success");
-            setLoading(false);
-            setMessage({
-              type: "success",
-              text: "Deposit confirmed. Wallet updated successfully.",
-            });
-
-            if (onApproved) onApproved(row);
-
-            clearCloseTimer();
-            closeTimerRef.current = setTimeout(() => {
-              onClose();
-            }, 1200);
-
+            handleSuccess("Deposit confirmed. Wallet updated successfully.", row, "realtime_update");
             return;
           }
 
           if (newStatus === "processing" || newStatus === "pending") {
-            setStatus("pending");
-            setLoading(false);
-            setMessage({
-              type: "info",
-              text: "Payment request sent. Check your phone and complete the prompt.",
-            });
+            handlePending("Payment request sent. Check your phone and complete the prompt.");
             return;
           }
 
           if (newStatus === "failed" || newStatus === "rejected") {
-            setStatus("failed");
-            setLoading(false);
-            setMessage({
-              type: "error",
-              text: failureText,
-            });
+            handleFailure(failureText, row);
           }
         },
       )
@@ -216,54 +259,27 @@ async function checkDepositStatus(targetDepositId) {
       .on("broadcast", { event: "deposit_update" }, ({ payload }) => {
         if (!payload || payload.deposit_id !== depositId) return;
 
-        const newStatus = String(payload.status || "").toLowerCase();
+        const newStatus = String(payload.status || "").trim().toLowerCase();
         const text =
           payload.message ||
           (newStatus === "success"
             ? "Deposit confirmed. Wallet updated successfully."
-            : "Payment failed. Please try again.");
+            : newStatus === "failed"
+            ? "Payment failed. Please try again."
+            : "Payment request sent. Check your phone and complete the prompt.");
 
         if (newStatus === "success" || newStatus === "approved" || newStatus === "completed") {
-          setStatus("success");
-          setLoading(false);
-          setMessage({
-            type: "success",
-            text,
-          });
-
-          if (onApproved) {
-            onApproved({
-              id: depositId,
-              status: newStatus,
-              message: text,
-            });
-          }
-
-          clearCloseTimer();
-          closeTimerRef.current = setTimeout(() => {
-            onClose();
-          }, 1200);
-
+          handleSuccess(text, payload, "broadcast_update");
           return;
         }
 
         if (newStatus === "failed" || newStatus === "rejected") {
-          setStatus("failed");
-          setLoading(false);
-          setMessage({
-            type: "error",
-            text,
-          });
+          handleFailure(text, payload);
           return;
         }
 
         if (newStatus === "processing" || newStatus === "pending") {
-          setStatus("pending");
-          setLoading(false);
-          setMessage({
-            type: "info",
-            text,
-          });
+          handlePending(text);
         }
       })
       .subscribe();
@@ -274,28 +290,17 @@ async function checkDepositStatus(targetDepositId) {
   }, [depositId, onApproved, onClose]);
 
   useEffect(() => {
-  if (!isOpen || !depositId || status !== "pending") {
-    clearStatusDelayTimer();
-    clearStatusPollInterval();
-    return;
-  }
+    if (!isOpen || !depositId || status !== "pending") {
+      stopPolling();
+      return;
+    }
 
-  clearStatusDelayTimer();
-  clearStatusPollInterval();
+    startStatusPolling(depositId);
 
-  statusDelayTimerRef.current = setTimeout(() => {
-    checkDepositStatus(depositId);
-
-    statusPollIntervalRef.current = setInterval(() => {
-      checkDepositStatus(depositId);
-    }, 5000);
-  }, 25000);
-
-  return () => {
-    clearStatusDelayTimer();
-    clearStatusPollInterval();
-  };
-}, [isOpen, depositId, status]);
+    return () => {
+      stopPolling();
+    };
+  }, [isOpen, depositId, status]);
 
   async function handleStartDeposit() {
     setMessage(null);
@@ -388,6 +393,7 @@ async function checkDepositStatus(targetDepositId) {
         });
       }
     } catch (e) {
+      stopPolling();
       setStatus("failed");
       setLoading(false);
       setMessage({
