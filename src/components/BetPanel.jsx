@@ -20,7 +20,6 @@ export default function BetPanel({
   const isRising = roundPhase === "rising";
   const hasActiveBet = activeBet?.status === "placed";
   const canCashout = isRising && hasActiveBet;
-  ...
   const actionLabel = canCashout ? "Cashout" : "Bet";
 
   function updateStake(delta) {
