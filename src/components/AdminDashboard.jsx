@@ -239,10 +239,10 @@ const refreshAdminActiveRound = useCallback(async () => {
     }
 
     const { data, error } = await supabase
-      .from("game_rounds")
-      .select("*")
-      .eq("status", "active")
-      .order("round_number", { ascending: false })
+      .from('game_rounds')
+      .select('*')
+      .eq('status', 'active')
+      .order('round_number', { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -251,8 +251,9 @@ const refreshAdminActiveRound = useCallback(async () => {
     setActiveRound(data ?? null);
     setLiveRoundNumber(data?.round_number ?? null);
     setRoundsReady(!!data);
+    console.log('Admin active round refreshed:', data);
   } catch (error) {
-    console.error("Admin active round refresh failed:", error);
+    console.error('Admin active round refresh failed:', error);
     setActiveRound(null);
     setLiveRoundNumber(null);
     setRoundsReady(false);
