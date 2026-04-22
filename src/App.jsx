@@ -530,7 +530,9 @@ const canBet = isBreakOpen && !!betRoundPublicId;
   }, [fetchNextWaitingRound]);
 
   const handleBreakStateChange = useCallback((breakOpen) => {
-    setIsBreakOpen(Boolean(breakOpen));
+    const open = Boolean(breakOpen);
+    setIsBreakOpen(open);
+    setRoundPhase(open ? "break" : "rising");
   }, []);
   
   const handleBetClick = useCallback(
