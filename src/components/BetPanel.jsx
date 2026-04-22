@@ -19,6 +19,9 @@ export default function BetPanel({
 
   const isRising = roundPhase === "rising";
   const hasActiveBet = activeBet?.status === "placed";
+  const canCashout = isRising && hasActiveBet;
+  ...
+  const actionLabel = canCashout ? "Cashout" : "Bet";
 
   function updateStake(delta) {
     if (isRising) return;
@@ -33,15 +36,12 @@ export default function BetPanel({
     setStake(panelId, value);
   }
 
-  const actionLabel = isRising ? "Cashout" : "Bet";
-
   const actionAmount = useMemo(() => {
-    if (isRising) {
-      if (!hasActiveBet) return formatMoney(0);
-      const live = Number(currentMultiplier);
-      const safe = Number.isFinite(live) && live > 1 ? live : 1;
-      return formatMoney(activeBet.stake * safe);
-    }
+if (canCashout) {
+  const live = Number(currentMultiplier);
+  const safe = Number.isFinite(live) && live > 1 ? live : 1;
+  return formatMoney(activeBet.stake * safe);
+}
 
     return formatMoney(stake);
   }, [isRising, hasActiveBet, currentMultiplier, activeBet, stake]);
@@ -52,10 +52,10 @@ export default function BetPanel({
       return;
     }
 
-    if (isRising) {
-      onBetClick?.("cashout", activeBet?.stake ?? stake, side);
-      return;
-    }
+  if (canCashout) {
+    onBetClick?.("cashout", activeBet?.stake ?? stake, side);
+    return;
+  }
 
     if (disabled) return;
     onBetClick?.("bet", stake, side);
