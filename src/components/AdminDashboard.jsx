@@ -231,15 +231,28 @@ const fetchLedger = useCallback(async () => {
 //////
 const refreshAdminActiveRound = useCallback(async () => {
   try {
-    const active = await fetchActiveRound();
+    if (!isSupabaseConfigured) {
+      setActiveRound(null);
+      setLiveRoundNumber(null);
+      setRoundsReady(false);
+      return;
+    }
 
-    setActiveRound(active ?? null);
-    setLiveRoundNumber(active?.round_number ?? null);
-    setRoundsReady(!!active);
+    const { data, error } = await supabase
+      .from("game_rounds")
+      .select("*")
+      .eq("status", "active")
+      .order("round_number", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    console.log('Admin active round refreshed:', active);
+    if (error) throw error;
+
+    setActiveRound(data ?? null);
+    setLiveRoundNumber(data?.round_number ?? null);
+    setRoundsReady(!!data);
   } catch (error) {
-    console.error('Admin active round refresh failed:', error);
+    console.error("Admin active round refresh failed:", error);
     setActiveRound(null);
     setLiveRoundNumber(null);
     setRoundsReady(false);
