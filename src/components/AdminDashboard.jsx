@@ -332,7 +332,25 @@ const fetchLiveRound = useCallback(async () => {
 
   setLiveRoundNumber(data?.round_number ?? null)
 }, [])
-  
+  const buildBurstPointPool = useCallback((count = 12) => {
+  const randomBetween = (min, max) =>
+    Number((min + Math.random() * (max - min)).toFixed(2))
+
+  const fullBatch = [
+    ...Array.from({ length: 4 }, () => randomBetween(1.1, 1.9)),
+    ...Array.from({ length: 3 }, () => randomBetween(2.0, 5.9)),
+    ...Array.from({ length: 2 }, () => randomBetween(6.0, 9.9)),
+    ...Array.from({ length: 2 }, () => randomBetween(10.0, 14.9)),
+    randomBetween(15.0, 30.0),
+  ]
+
+  for (let i = fullBatch.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[fullBatch[i], fullBatch[j]] = [fullBatch[j], fullBatch[i]]
+  }
+
+  return fullBatch.slice(0, Math.max(0, count))
+}, [])
     const generateWaitingRounds = useCallback(async (count = 12) => {
     if (isGeneratingRef.current) {
       console.warn('Generation already in progress — skipping')
@@ -357,10 +375,12 @@ const fetchLiveRound = useCallback(async () => {
       
       const nextRoundNumberStart = (latestRound?.round_number ?? 0) + 1
       const createdAt = new Date().toISOString()
+      
+      const burstPool = buildBurstPointPool(count)
   
       const newRounds = Array.from({ length: count }, (_, i) => {
         const roundNumber = nextRoundNumberStart + i
-        const burst = Number((1.8 + Math.random() * 13.2).toFixed(2))
+        const burst = burstPool[i]
   
         return {
           round_id: crypto.randomUUID(),
@@ -884,6 +904,33 @@ useEffect(() => {
           </div>
         )}
       </div>
+//////
+      <div className="admin-card">
+  <div className="admin-card__header">
+    <h3>Burst Point Generation Guide</h3>
+  </div>
+
+  <div className="admin-card__body">
+    <p>
+      For a generated batch of <strong>12 rounds</strong>, burst points should be distributed as follows:
+    </p>
+
+    <ul style={{ margin: "0.75rem 0 0 1rem", lineHeight: 1.7 }}>
+      <li><strong>4 rounds</strong>: between <strong>1.1</strong> and <strong>1.9</strong></li>
+      <li><strong>3 rounds</strong>: between <strong>2.0</strong> and <strong>5.9</strong></li>
+      <li><strong>2 rounds</strong>: between <strong>6.0</strong> and <strong>9.9</strong></li>
+      <li><strong>2 rounds</strong>: between <strong>10.0</strong> and <strong>14.9</strong></li>
+      <li><strong>1 round</strong>: between <strong>15.0</strong> and <strong>30.0</strong></li>
+    </ul>
+
+    <p style={{ marginTop: "0.9rem" }}>
+      These values must be <strong>mixed randomly</strong> with <strong>no visible pattern</strong>. The order of the
+      generated burst points should feel as random as possible.
+    </p>
+  </div>
+</div>
+
+      //////
 
       {/* Ledger view */}
       <div className="admin-dashboard__card admin-dashboard__card--wide">
