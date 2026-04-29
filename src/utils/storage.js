@@ -56,15 +56,12 @@ export function getAuthRole(userId) {
     return null
   }
 }
-
 export function setAuthRole(userId, role) {
   try {
     if (!userId) return
     localStorage.setItem(ROLE_USER_KEY, String(userId))
     localStorage.setItem(ROLE_KEY, String(role ?? ''))
-  } catch {
-    // Ignore
-  }
+  } catch {}
 }
 
 export function clearAuthRole() {
