@@ -19,7 +19,6 @@ import Toast from "./components/Toast.jsx";
 import LoadingOverlay from "./components/LoadingOverlay.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import { fetchActiveRound, advanceRound } from "./utils/gameRounds.js";
-const [roleLoading, setRoleLoading] = useState(false);
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -45,6 +44,7 @@ export default function App() {
     bottom: null,
   });
 
+const [roleLoading, setRoleLoading] = useState(false);
   // Data state
   const [wallet, setWallet] = useState(null);
   const [deposits, setDeposits] = useState([]);
