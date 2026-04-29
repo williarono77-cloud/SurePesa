@@ -19,6 +19,7 @@ import Toast from "./components/Toast.jsx";
 import LoadingOverlay from "./components/LoadingOverlay.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import { fetchActiveRound, advanceRound } from "./utils/gameRounds.js";
+const [roleLoading, setRoleLoading] = useState(false);
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -118,47 +119,60 @@ export default function App() {
     return bets;
   }, []);
 
-  function fetchAndSetRole(uid, cancelledRef) {
-    if (!uid) return;
+function fetchAndSetRole(uid, cancelledRef) {
+  if (!uid) {
     setRole(null);
-  
-    supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", uid)
-      .maybeSingle()
-      .then(({ data, error }) => {
-        if (cancelledRef?.current) return;
-  
-        if (error) {
-          console.error("Profile role fetch failed", error);
-          setRole((prev) => prev ?? "user");
-          return;
-        }
-  
-        const normalizedRole =
-          typeof data?.role === "string"
-            ? data.role.trim().toLowerCase()
-            : null;
-  
-        const r = normalizedRole === "admin" ? "admin" : "user";
-  
-        console.log("App.jsx: fetched profile role", {
-          uid,
-          rawRole: data?.role ?? null,
-          normalizedRole,
-          appliedRole: r,
-        });
-  
-        setRole(r);
-        setAuthRole(uid, r);
-      })
-      .catch((err) => {
-        if (cancelledRef?.current) return;
-        console.error("Profile role fetch failed after login", err);
-        setRole((prev) => prev ?? "user");
-      });
+    setRoleLoading(false);
+    return;
   }
+
+  setRoleLoading(true);
+  setRole(null);
+
+  supabase
+    .from("profiles")
+    .select("id, role")
+    .eq("id", uid)
+    .maybeSingle()
+    .then(({ data, error }) => {
+      if (cancelledRef?.current) return;
+
+      if (error) {
+        console.error("Profile role fetch failed", error);
+        setRole(null);
+        return;
+      }
+
+      const normalizedRole =
+        typeof data?.role === "string" ? data.role.trim().toLowerCase() : null;
+
+      const resolvedRole = normalizedRole === "admin" ? "admin" : "user";
+
+      console.log("App.jsx: fetched profile role", {
+        uid,
+        profileId: data?.id ?? null,
+        rawRole: data?.role ?? null,
+        normalizedRole,
+        resolvedRole,
+      });
+
+      setRole(resolvedRole);
+      setAuthRole(uid, resolvedRole);
+
+      if (resolvedRole === "admin") {
+        window.location.replace("/admin.html");
+      }
+    })
+    .catch((err) => {
+      if (cancelledRef?.current) return;
+      console.error("Profile role fetch failed after login", err);
+      setRole(null);
+    })
+    .finally(() => {
+      if (cancelledRef?.current) return;
+      setRoleLoading(false);
+    });
+}
 
   // Initialize session and role
   useEffect(() => {
@@ -285,13 +299,13 @@ useEffect(() => {
   }, [userId, refreshPrivateData]);
 
   // Redirect admins to the dedicated admin app
-  useEffect(() => {
-    if (loading) return;
-    if (!session?.user?.id) return;
-    if (role !== "admin") return;
-  
+useEffect(() => {
+  if (loading || roleLoading) return;
+  if (!session?.user?.id) return;
+  if (role === "admin") {
     window.location.replace("/admin.html");
-  }, [loading, session, role]);
+  }
+}, [loading, roleLoading, session, role]);
 
   // Realtime: wallets
   useEffect(() => {
@@ -694,9 +708,9 @@ const canBet = isBreakOpen && !!betRoundPublicId;
     ]
   );
 
-  if (loading) {
-    return <LoadingOverlay />;
-  }
+if (loading || (session?.user?.id && roleLoading)) {
+  return <LoadingOverlay text="Loading..." />;
+}
 
   return (
     <div className={`app ${fullscreen ? "app--fullscreen" : ""}`}>
