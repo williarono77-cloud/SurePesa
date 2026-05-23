@@ -9,6 +9,7 @@ export default function GameCard({
   onRestComplete,
 }) {
   const [multiplier, setMultiplier] = useState(1.0);
+  const [timeOffset, setTimeOffset] = useState(0);
   const [roundState, setRoundState] = useState("live"); // 'live' | 'burst' | 'rest'
   const [restCountdown, setRestCountdown] = useState(5);
   const [restProgress, setRestProgress] = useState(0);
@@ -70,13 +71,17 @@ export default function GameCard({
       };
     }
 
-    const startTime = performance.now();
+// Use real round start time (server-based)
+    const startTime = round?.starts_at
+      ? new Date(round.starts_at).getTime()
+      : Date.now();
     const target = numericBurst;
 
     const animate = (now) => {
       if (roundStateRef.current !== "live") return;
 
-      const elapsed = now - startTime;
+      const nowMs = Date.now();
+      const elapsed = nowMs - startTime;
       const t = elapsed / 1000;
 
       const k = 0.18;
@@ -164,6 +169,7 @@ export default function GameCard({
   }, [
     burstPoint,
     round,
+    timeOffset, // ✅ ADD THIS
     onMultiplierUpdate,
     onBurst,
     onBreakStateChange,
